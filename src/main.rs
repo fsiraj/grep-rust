@@ -16,10 +16,10 @@ fn match_alphanumeric(input_line: &str) -> bool {
         .any(|c| c.is_ascii_alphanumeric() || c == '_');
 }
 
-fn match_character_group(input_line: &str, char_group: &str) -> bool {
+fn match_character_group(input_line: &str, char_group: &str, positive: bool) -> bool {
     return char_group
         .chars()
-        .any(|char| match_pattern(input_line, &char.to_string()));
+        .any(|char| !positive ^ match_pattern(input_line, &char.to_string()));
 }
 
 fn match_pattern(input_line: &str, pattern: &str) -> bool {
@@ -36,9 +36,16 @@ fn match_pattern(input_line: &str, pattern: &str) -> bool {
         return match_alphanumeric(input_line);
     }
     if pattern_len >= 3 && pattern.starts_with('[') && pattern.ends_with(']') {
-        let char_group = &pattern[1..pattern.len()-1];
-        eprintln!("Character Group: {}", char_group);
-        return match_character_group(input_line, char_group);
+        let (start, positive) = match pattern.chars().nth(1).unwrap() {
+            '^' => (2, false),
+            _ => (1, true),
+        };
+        let char_group = &pattern[start..pattern.len() - 1];
+        eprintln!("Character Group: {} ({})", char_group, positive);
+        if !positive && pattern_len == 3 {
+            return true;
+        }
+        return match_character_group(input_line, char_group, positive);
     }
 
     panic!("Unhandled pattern: {}", pattern)
@@ -58,8 +65,10 @@ fn main() {
 
     // Uncomment this block to pass the first stage
     if match_pattern(&input_line, &pattern) {
+        eprintln!("Match");
         process::exit(0)
     } else {
+        eprintln!("No match");
         process::exit(1)
     }
 }
