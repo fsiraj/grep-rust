@@ -9,6 +9,9 @@ fn match_pattern(input_line: &str, pattern: &str) -> bool {
     if pattern == "\\d" {
         return input_line.chars().any(|c| c.is_ascii_digit());
     }
+    if pattern == "\\w" {
+        return input_line.chars().any(|c| c.is_ascii_alphanumeric() || c == '_');
+    }
     panic!("Unhandled pattern: {}", pattern)
 }
 
