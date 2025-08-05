@@ -3,30 +3,39 @@ use std::io;
 use std::process;
 
 fn match_char(input_line: &str, char: char) -> bool {
-    return input_line.contains(char);
+    input_line.contains(char)
 }
 
 fn match_numeric(input_line: &str) -> bool {
-    return input_line.chars().any(|c| c.is_ascii_digit());
+     input_line.chars().any(|c| c.is_ascii_digit())
 }
 
 fn match_alphanumeric(input_line: &str) -> bool {
-    return input_line
+    input_line
         .chars()
-        .any(|c| c.is_ascii_alphanumeric() || c == '_');
+        .any(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
-fn match_character_group(input_line: &str, char_group: &str, positive: bool) -> bool {
-    return char_group
+fn match_character_group(input_line: &str, pattern: &str) -> bool {
+    let (start, positive) = match pattern.chars().nth(1).unwrap() {
+        '^' => (2, false),
+        _ => (1, true),
+    };
+    let char_group = &pattern[start..pattern.len() - 1];
+    eprintln!("Character Group: {} ({})", char_group, positive);
+
+    if !positive && pattern.len() == 3 {
+        return true;
+    }
+    char_group
         .chars()
-        .any(|char| !positive ^ match_pattern(input_line, &char.to_string()));
+        .any(|char| !positive ^ match_pattern(input_line, &char.to_string()))
 }
 
 fn match_pattern(input_line: &str, pattern: &str) -> bool {
-    let pattern_len = pattern.chars().count();
-    eprintln!("Pattern: {} ({})", pattern, pattern_len);
+    eprintln!("Pattern: {} ({})", pattern, pattern.len());
 
-    if pattern_len == 1 {
+    if pattern.len() == 1 {
         return match_char(input_line, pattern.chars().next().unwrap());
     }
     if pattern == "\\d" {
@@ -35,17 +44,8 @@ fn match_pattern(input_line: &str, pattern: &str) -> bool {
     if pattern == "\\w" {
         return match_alphanumeric(input_line);
     }
-    if pattern_len >= 3 && pattern.starts_with('[') && pattern.ends_with(']') {
-        let (start, positive) = match pattern.chars().nth(1).unwrap() {
-            '^' => (2, false),
-            _ => (1, true),
-        };
-        let char_group = &pattern[start..pattern.len() - 1];
-        eprintln!("Character Group: {} ({})", char_group, positive);
-        if !positive && pattern_len == 3 {
-            return true;
-        }
-        return match_character_group(input_line, char_group, positive);
+    if pattern.len() >= 3 && pattern.starts_with('[') && pattern.ends_with(']') {
+        return match_character_group(input_line, pattern);
     }
 
     panic!("Unhandled pattern: {}", pattern)
