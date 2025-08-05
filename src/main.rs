@@ -2,24 +2,50 @@ use std::env;
 use std::io;
 use std::process;
 
+fn match_char(input_line: &str, char: char) -> bool {
+    return input_line.contains(char);
+}
+
+fn match_numeric(input_line: &str) -> bool {
+    return input_line.chars().any(|c| c.is_ascii_digit());
+}
+
+fn match_alphanumeric(input_line: &str) -> bool {
+    return input_line
+        .chars()
+        .any(|c| c.is_ascii_alphanumeric() || c == '_');
+}
+
+fn match_character_group(input_line: &str, char_group: &str) -> bool {
+    return char_group
+        .chars()
+        .any(|char| match_pattern(input_line, &char.to_string()));
+}
+
 fn match_pattern(input_line: &str, pattern: &str) -> bool {
-    if pattern.chars().count() == 1 {
-        return input_line.contains(pattern);
+    let pattern_len = pattern.chars().count();
+    eprintln!("Pattern: {} ({})", pattern, pattern_len);
+
+    if pattern_len == 1 {
+        return match_char(input_line, pattern.chars().next().unwrap());
     }
     if pattern == "\\d" {
-        return input_line.chars().any(|c| c.is_ascii_digit());
+        return match_numeric(input_line);
     }
     if pattern == "\\w" {
-        return input_line.chars().any(|c| c.is_ascii_alphanumeric() || c == '_');
+        return match_alphanumeric(input_line);
     }
+    if pattern_len >= 3 && pattern.starts_with('[') && pattern.ends_with(']') {
+        let char_group = &pattern[1..pattern.len()-1];
+        eprintln!("Character Group: {}", char_group);
+        return match_character_group(input_line, char_group);
+    }
+
     panic!("Unhandled pattern: {}", pattern)
 }
 
 // Usage: echo <input_text> | your_program.sh -E <pattern>
 fn main() {
-    // You can use print statements as follows for debugging, they'll be visible when running tests.
-    eprintln!("Logs from your program will appear here!");
-
     if env::args().nth(1).unwrap() != "-E" {
         println!("Expected first argument to be '-E'");
         process::exit(1);
