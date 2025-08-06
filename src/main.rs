@@ -2,15 +2,21 @@ use std::env;
 use std::io;
 use std::process;
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
+enum MetaChar {
+    LineStart,
+    LineEnd,
+}
+#[derive(Debug, PartialEq)]
 enum CharClass {
-    DIGIT,
-    ALPHANUMERIC,
+    Digit,
+    Alphaneumeric,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 enum RegexToken {
     Char(char),
+    Meta(MetaChar),
     Class(CharClass),
     Group {
         group: Vec<RegexToken>,
@@ -26,10 +32,10 @@ fn compile_pattern(pattern: &str) -> Vec<RegexToken> {
         match c {
             '\\' => match iter.next() {
                 Some((_, 'd')) => {
-                    tokens.push(RegexToken::Class(CharClass::DIGIT));
+                    tokens.push(RegexToken::Class(CharClass::Digit));
                 }
                 Some((_, 'w')) => {
-                    tokens.push(RegexToken::Class(CharClass::ALPHANUMERIC));
+                    tokens.push(RegexToken::Class(CharClass::Alphaneumeric));
                 }
                 _ => {}
             },
@@ -44,7 +50,7 @@ fn compile_pattern(pattern: &str) -> Vec<RegexToken> {
                 }
                 if sub_pattern.len() > 0 {
                     let (start, negate) =
-                        if sub_pattern.len() > 1 && sub_pattern.chars().nth(0).unwrap() == '^' {
+                        if sub_pattern.len() > 1 && sub_pattern.chars().next().unwrap() == '^' {
                             (1, true)
                         } else {
                             (0, false)
@@ -55,6 +61,12 @@ fn compile_pattern(pattern: &str) -> Vec<RegexToken> {
                         negate: negate,
                     });
                 }
+            }
+            '^' => {
+                tokens.push(RegexToken::Meta(MetaChar::LineStart));
+            }
+            '$' => {
+                tokens.push(RegexToken::Meta(MetaChar::LineEnd));
             }
             _ => {
                 tokens.push(RegexToken::Char(c));
@@ -68,8 +80,8 @@ fn match_token(c: char, token: &RegexToken) -> bool {
     match token {
         RegexToken::Char(c_) => c == *c_,
         RegexToken::Class(c_class) => match c_class {
-            CharClass::DIGIT => c.is_numeric(),
-            CharClass::ALPHANUMERIC => c.is_alphanumeric() || c == '_',
+            CharClass::Digit => c.is_numeric(),
+            CharClass::Alphaneumeric => c.is_alphanumeric() || c == '_',
         },
         RegexToken::Group { group, negate } => {
             if *negate {
@@ -78,6 +90,7 @@ fn match_token(c: char, token: &RegexToken) -> bool {
                 group.iter().any(|t| match_token(c, t))
             }
         }
+        RegexToken::Meta(_) => unreachable!(),
     }
 }
 
@@ -89,7 +102,7 @@ fn match_substr(text: &str, pattern: &[RegexToken]) -> bool {
     if text.len() == 0 {
         return false;
     }
-    let c = text.chars().nth(0).unwrap();
+    let c = text.chars().next().unwrap();
     if match_token(c, &pattern[0]) {
         // eprintln!("match, incrementing...");
         let next = c.len_utf8();
@@ -102,6 +115,10 @@ fn match_pattern(text: &str, pattern: &str) -> bool {
     // eprintln!("{:?} - {:?}", text, pattern);
     let regex_tokens = compile_pattern(pattern);
     // eprintln!("{:?}", regex_tokens);
+
+    if regex_tokens.get(0) == Some(&RegexToken::Meta(MetaChar::LineStart)) {
+        return match_substr(text, &regex_tokens[1..]);
+    }
 
     let mut input_line = text;
     loop {
