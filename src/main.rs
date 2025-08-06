@@ -99,6 +99,9 @@ fn match_substr(text: &str, pattern: &[RegexToken]) -> bool {
     if pattern.len() == 0 {
         return true;
     }
+    if pattern[0] == RegexToken::Meta(MetaChar::LineEnd) && pattern.len() == 1 {
+        return text.len() == 0;
+    }
     if text.len() == 0 {
         return false;
     }
@@ -120,17 +123,12 @@ fn match_pattern(text: &str, pattern: &str) -> bool {
         return match_substr(text, &regex_tokens[1..]);
     }
 
-    let mut input_line = text;
-    loop {
-        if input_line.len() == 0 {
-            return false;
-        };
-        if match_substr(input_line, &regex_tokens) {
+    for (i, _) in text.char_indices() {
+        if match_substr(&text[i..], &regex_tokens) {
             return true;
-        };
-        let next = input_line.chars().nth(0).unwrap().len_utf8();
-        input_line = &input_line[next..];
+        }
     }
+    false
 }
 
 // Usage: echo <input_text> | your_program.sh -E <pattern>
