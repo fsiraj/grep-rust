@@ -3,21 +3,32 @@ use std::io;
 use std::process;
 
 #[derive(Debug, PartialEq)]
-enum MetaChar {
-    LineStart,
-    LineEnd,
+enum Line {
+    Start,
+    End,
 }
+
 #[derive(Debug, PartialEq)]
-enum CharClass {
+enum Escape {
     Digit,
     Alphaneumeric,
 }
 
 #[derive(Debug, PartialEq)]
+enum Quantity {
+    Plus,
+    Star,
+}
+
+#[derive(Debug, PartialEq)]
 enum RegexToken {
     Char(char),
-    Meta(MetaChar),
-    Class(CharClass),
+    Quantifier {
+        token: Box<RegexToken>,
+        kind: Quantity,
+    },
+    Boundary(Line),
+    Class(Escape),
     Group {
         group: Vec<RegexToken>,
         negate: bool,
@@ -32,10 +43,10 @@ fn compile_pattern(pattern: &str) -> Vec<RegexToken> {
         match c {
             '\\' => match iter.next() {
                 Some((_, 'd')) => {
-                    tokens.push(RegexToken::Class(CharClass::Digit));
+                    tokens.push(RegexToken::Class(Escape::Digit));
                 }
                 Some((_, 'w')) => {
-                    tokens.push(RegexToken::Class(CharClass::Alphaneumeric));
+                    tokens.push(RegexToken::Class(Escape::Alphaneumeric));
                 }
                 _ => {}
             },
@@ -45,7 +56,7 @@ fn compile_pattern(pattern: &str) -> Vec<RegexToken> {
                     match iter.next() {
                         Some((_, ']')) => break,
                         Some((_, c_)) => sub_pattern.push(c_),
-                        None => eprintln!("invalid character group"),
+                        None => panic!("invalid character group"),
                     }
                 }
                 if sub_pattern.len() > 0 {
@@ -62,11 +73,25 @@ fn compile_pattern(pattern: &str) -> Vec<RegexToken> {
                     });
                 }
             }
-            '^' => {
-                tokens.push(RegexToken::Meta(MetaChar::LineStart));
+            '^' | '$' => {
+                tokens.push(RegexToken::Boundary(if c == '^' {
+                    Line::Start
+                } else {
+                    Line::End
+                }));
             }
-            '$' => {
-                tokens.push(RegexToken::Meta(MetaChar::LineEnd));
+            '+' | '*' => {
+                let Some(RegexToken::Char(c_)) = tokens.pop() else {
+                    panic!("quantifier missing char");
+                };
+                tokens.push(RegexToken::Quantifier {
+                    token: Box::new(RegexToken::Char(c_)),
+                    kind: if c == '+' {
+                        Quantity::Plus
+                    } else {
+                        Quantity::Star
+                    },
+                });
             }
             _ => {
                 tokens.push(RegexToken::Char(c));
@@ -80,8 +105,8 @@ fn match_token(c: char, token: &RegexToken) -> bool {
     match token {
         RegexToken::Char(c_) => c == *c_,
         RegexToken::Class(c_class) => match c_class {
-            CharClass::Digit => c.is_numeric(),
-            CharClass::Alphaneumeric => c.is_alphanumeric() || c == '_',
+            Escape::Digit => c.is_numeric(),
+            Escape::Alphaneumeric => c.is_alphanumeric() || c == '_',
         },
         RegexToken::Group { group, negate } => {
             if *negate {
@@ -90,8 +115,38 @@ fn match_token(c: char, token: &RegexToken) -> bool {
                 group.iter().any(|t| match_token(c, t))
             }
         }
-        RegexToken::Meta(_) => unreachable!(),
+        RegexToken::Boundary(_) => unreachable!(),
+        RegexToken::Quantifier { token: _, kind: _ } => unreachable!(),
     }
+}
+
+fn match_quantifier(
+    text: &str,
+    token: &RegexToken,
+    kind: &Quantity,
+    pattern: &[RegexToken],
+) -> bool {
+    let mut iter = text.char_indices().peekable();
+
+    if *kind == Quantity::Plus {
+        let Some((_, c_)) = iter.next() else {
+            return false;
+        };
+        if !match_token(c_, token) {
+            return false;
+        }
+    }
+    while let Some((i, c_)) = iter.peek() {
+        if match_substr(&text[*i..], pattern) {
+            return true;
+        }
+        if match_token(*c_, token) {
+            iter.next();
+        } else {
+            return false;
+        }
+    }
+    match_substr("", pattern)
 }
 
 fn match_substr(text: &str, pattern: &[RegexToken]) -> bool {
@@ -99,8 +154,11 @@ fn match_substr(text: &str, pattern: &[RegexToken]) -> bool {
     if pattern.len() == 0 {
         return true;
     }
-    if pattern[0] == RegexToken::Meta(MetaChar::LineEnd) && pattern.len() == 1 {
+    if pattern[0] == RegexToken::Boundary(Line::End) {
         return text.len() == 0;
+    }
+    if let RegexToken::Quantifier { token, kind } = &pattern[0] {
+        return match_quantifier(text, token.as_ref(), kind, &pattern[1..]);
     }
     if text.len() == 0 {
         return false;
@@ -115,11 +173,10 @@ fn match_substr(text: &str, pattern: &[RegexToken]) -> bool {
 }
 
 fn match_pattern(text: &str, pattern: &str) -> bool {
-    // eprintln!("{:?} - {:?}", text, pattern);
     let regex_tokens = compile_pattern(pattern);
     // eprintln!("{:?}", regex_tokens);
 
-    if regex_tokens.get(0) == Some(&RegexToken::Meta(MetaChar::LineStart)) {
+    if regex_tokens[0] == RegexToken::Boundary(Line::Start) {
         return match_substr(text, &regex_tokens[1..]);
     }
 
