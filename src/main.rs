@@ -105,7 +105,7 @@ fn compile_pattern(pattern: &str) -> Vec<RegexToken> {
 
 fn match_token(c: char, token: &RegexToken) -> bool {
     match token {
-        RegexToken::Char(c_) => c == *c_,
+        RegexToken::Char(c_) => c == *c_ || *c_ == '.',
         RegexToken::Class(c_class) => match c_class {
             Escape::Digit => c.is_numeric(),
             Escape::Alphaneumeric => c.is_alphanumeric() || c == '_',
