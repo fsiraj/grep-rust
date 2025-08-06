@@ -23,40 +23,42 @@ fn compile_pattern(pattern: &str) -> Vec<RegexToken> {
     let mut tokens = Vec::new();
 
     while let Some((_, c)) = iter.next() {
-        if c == '\\' {
-            match iter.next() {
+        match c {
+            '\\' => match iter.next() {
                 Some((_, 'd')) => {
                     tokens.push(RegexToken::Class(CharClass::DIGIT));
                 }
                 Some((_, 'w')) => {
                     tokens.push(RegexToken::Class(CharClass::ALPHANUMERIC));
                 }
-                _ => eprintln!("invalid character class"),
-            }
-        } else if c == '[' {
-            let mut sub_pattern = String::new();
-            loop {
-                match iter.next() {
-                    Some((_, ']')) => break,
-                    Some((_, c_)) => sub_pattern.push(c_),
-                    None => eprintln!("invalid character group")
+                _ => {}
+            },
+            '[' => {
+                let mut sub_pattern = String::new();
+                loop {
+                    match iter.next() {
+                        Some((_, ']')) => break,
+                        Some((_, c_)) => sub_pattern.push(c_),
+                        None => eprintln!("invalid character group"),
+                    }
+                }
+                if sub_pattern.len() > 0 {
+                    let (start, negate) =
+                        if sub_pattern.len() > 1 && sub_pattern.chars().nth(0).unwrap() == '^' {
+                            (1, true)
+                        } else {
+                            (0, false)
+                        };
+                    let group = compile_pattern(&sub_pattern[start..]);
+                    tokens.push(RegexToken::Group {
+                        group: group,
+                        negate: negate,
+                    });
                 }
             }
-            if sub_pattern.len() > 0 {
-                let (start, negate) =
-                    if sub_pattern.len() > 1 && sub_pattern.chars().nth(0).unwrap() == '^' {
-                        (1, true)
-                    } else {
-                        (0, false)
-                    };
-                let group = compile_pattern(&sub_pattern[start..]);
-                tokens.push(RegexToken::Group {
-                    group: group,
-                    negate: negate,
-                });
+            _ => {
+                tokens.push(RegexToken::Char(c));
             }
-        } else {
-            tokens.push(RegexToken::Char(c));
         }
     }
     tokens
@@ -126,7 +128,6 @@ fn main() {
 
     io::stdin().read_line(&mut input_line).unwrap();
 
-    // Uncomment this block to pass the first stage
     if match_pattern(&input_line, &pattern) {
         eprintln!("Match");
         process::exit(0)
