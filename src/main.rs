@@ -2,53 +2,116 @@ use std::env;
 use std::io;
 use std::process;
 
-fn match_char(input_line: &str, char: char) -> bool {
-    input_line.contains(char)
+#[derive(Debug)]
+enum CharClass {
+    DIGIT,
+    ALPHANUMERIC,
 }
 
-fn match_numeric(input_line: &str) -> bool {
-     input_line.chars().any(|c| c.is_ascii_digit())
+#[derive(Debug)]
+enum RegexToken {
+    Char(char),
+    Class(CharClass),
+    Group {
+        group: Vec<RegexToken>,
+        negate: bool,
+    },
 }
 
-fn match_alphanumeric(input_line: &str) -> bool {
-    input_line
-        .chars()
-        .any(|c| c.is_ascii_alphanumeric() || c == '_')
+fn compile_pattern(pattern: &str) -> Vec<RegexToken> {
+    let mut iter = pattern.char_indices();
+    let mut tokens = Vec::new();
+
+    while let Some((_, c)) = iter.next() {
+        if c == '\\' {
+            match iter.next() {
+                Some((_, 'd')) => {
+                    tokens.push(RegexToken::Class(CharClass::DIGIT));
+                }
+                Some((_, 'w')) => {
+                    tokens.push(RegexToken::Class(CharClass::ALPHANUMERIC));
+                }
+                _ => eprintln!("invalid character class"),
+            }
+        } else if c == '[' {
+            let mut sub_pattern = String::new();
+            loop {
+                match iter.next() {
+                    Some((_, ']')) => break,
+                    Some((_, c_)) => sub_pattern.push(c_),
+                    None => eprintln!("invalid character group")
+                }
+            }
+            if sub_pattern.len() > 0 {
+                let (start, negate) =
+                    if sub_pattern.len() > 1 && sub_pattern.chars().nth(0).unwrap() == '^' {
+                        (1, true)
+                    } else {
+                        (0, false)
+                    };
+                let group = compile_pattern(&sub_pattern[start..]);
+                tokens.push(RegexToken::Group {
+                    group: group,
+                    negate: negate,
+                });
+            }
+        } else {
+            tokens.push(RegexToken::Char(c));
+        }
+    }
+    tokens
 }
 
-fn match_character_group(input_line: &str, pattern: &str) -> bool {
-    let (start, positive) = match pattern.chars().nth(1).unwrap() {
-        '^' => (2, false),
-        _ => (1, true),
-    };
-    let char_group = &pattern[start..pattern.len() - 1];
-    eprintln!("Character Group: {} ({})", char_group, positive);
+fn match_token(c: char, token: &RegexToken) -> bool {
+    match token {
+        RegexToken::Char(c_) => c == *c_,
+        RegexToken::Class(c_class) => match c_class {
+            CharClass::DIGIT => c.is_numeric(),
+            CharClass::ALPHANUMERIC => c.is_alphanumeric() || c == '_',
+        },
+        RegexToken::Group { group, negate } => {
+            if *negate {
+                group.iter().all(|t| !match_token(c, t))
+            } else {
+                group.iter().any(|t| match_token(c, t))
+            }
+        }
+    }
+}
 
-    if !positive && pattern.len() == 3 {
+fn match_substr(text: &str, pattern: &[RegexToken]) -> bool {
+    // eprintln!("{:?} - {:?}", text, pattern);
+    if pattern.len() == 0 {
         return true;
     }
-    char_group
-        .chars()
-        .any(|char| !positive ^ match_pattern(input_line, &char.to_string()))
+    if text.len() == 0 {
+        return false;
+    }
+    let c = text.chars().nth(0).unwrap();
+    if match_token(c, &pattern[0]) {
+        // eprintln!("match, incrementing...");
+        let next = c.len_utf8();
+        return match_substr(&text[next..], &pattern[1..]);
+    }
+    false
 }
 
-fn match_pattern(input_line: &str, pattern: &str) -> bool {
-    eprintln!("Pattern: {} ({})", pattern, pattern.len());
+fn match_pattern(text: &str, pattern: &str) -> bool {
+    // eprintln!("{:?} - {:?}", text, pattern);
+    let regex_tokens = compile_pattern(pattern);
+    // eprintln!("{:?}", regex_tokens);
 
-    if pattern.len() == 1 {
-        return match_char(input_line, pattern.chars().next().unwrap());
+    let mut input_line = text;
+    loop {
+        if input_line.len() == 0 {
+            return false;
+        };
+        if match_substr(input_line, &regex_tokens) {
+            return true;
+        };
+        let next = input_line.chars().nth(0).unwrap().len_utf8();
+        input_line = &input_line[next..];
     }
-    if pattern == "\\d" {
-        return match_numeric(input_line);
-    }
-    if pattern == "\\w" {
-        return match_alphanumeric(input_line);
-    }
-    if pattern.len() >= 3 && pattern.starts_with('[') && pattern.ends_with(']') {
-        return match_character_group(input_line, pattern);
-    }
-
-    panic!("Unhandled pattern: {}", pattern)
 }
 
 // Usage: echo <input_text> | your_program.sh -E <pattern>
