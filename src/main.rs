@@ -177,7 +177,7 @@ fn match_quantifier(
 
 // returns Some(size) of match, None if no match
 fn match_substr(text: &[char], patterns: &[Pattern]) -> Option<usize> {
-    eprintln!("{:?} - {:?}", text, patterns);
+    // eprintln!("{:?} - {:?}", text, patterns);
 
     if patterns.is_empty() {
         // pattern ended, nothing more to check
@@ -238,8 +238,8 @@ fn match_substr(text: &[char], patterns: &[Pattern]) -> Option<usize> {
 fn match_pattern(text: &str, patterns: &str) -> Option<usize> {
     let text = text.chars().collect::<Vec<char>>();
     let regex = compile_regex(patterns);
-    eprintln!("{:?} ({:?})", text, text.len());
-    eprintln!("{:?}", regex);
+    // eprintln!("{:?} ({:?})", text, text.len());
+    // eprintln!("{:?}", regex);
 
     if let Pattern::Bound(Line::Start) = regex[0] {
         // no need to test any other starting positions
