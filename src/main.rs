@@ -18,36 +18,36 @@ enum Escape {
 enum Quantity {
     OneOrMore,
     ZeroOrMore,
-    OneOrZero,
+    ZeroOrOne,
 }
 
 #[derive(Debug, PartialEq)]
-enum RegexToken {
+enum Pattern {
     Char(char),
-    Quantifier {
-        token: Box<RegexToken>,
-        kind: Quantity,
-    },
     Boundary(Line),
     Class(Escape),
+    Quantifier {
+        pattern: Box<Pattern>,
+        kind: Quantity,
+    },
     Group {
-        group: Vec<RegexToken>,
+        group: Vec<Pattern>,
         negate: bool,
     },
 }
 
-fn compile_pattern(pattern: &str) -> Vec<RegexToken> {
-    let mut iter = pattern.char_indices();
-    let mut tokens = Vec::new();
+fn compile_regex(regex: &str) -> Vec<Pattern> {
+    let mut iter = regex.char_indices();
+    let mut patterns = Vec::new();
 
-    while let Some((_, c)) = iter.next() {
+    while let Some((i, c)) = iter.next() {
         match c {
             '\\' => match iter.next() {
                 Some((_, 'd')) => {
-                    tokens.push(RegexToken::Class(Escape::Digit));
+                    patterns.push(Pattern::Class(Escape::Digit));
                 }
                 Some((_, 'w')) => {
-                    tokens.push(RegexToken::Class(Escape::Alphaneumeric));
+                    patterns.push(Pattern::Class(Escape::Alphaneumeric));
                 }
                 _ => {}
             },
@@ -67,144 +67,152 @@ fn compile_pattern(pattern: &str) -> Vec<RegexToken> {
                         } else {
                             (0, false)
                         };
-                    let group = compile_pattern(&sub_pattern[start..]);
-                    tokens.push(RegexToken::Group {
+                    let group = compile_regex(&sub_pattern[start..]);
+                    patterns.push(Pattern::Group {
                         group: group,
                         negate: negate,
                     });
                 }
             }
-            '^' | '$' => {
-                tokens.push(RegexToken::Boundary(if c == '^' {
-                    Line::Start
-                } else {
-                    Line::End
-                }));
+            '^' if i == 0 => {
+                patterns.push(Pattern::Boundary(Line::Start));
+            }
+            '$' if i == regex.len() - 1 => {
+                patterns.push(Pattern::Boundary(Line::End));
             }
             '+' | '*' | '?' => {
-                let Some(RegexToken::Char(c_)) = tokens.pop() else {
-                    panic!("quantifier missing char");
+                let Some(pattern) = patterns.pop() else {
+                    panic!("quantifier missing pattern");
                 };
-                tokens.push(RegexToken::Quantifier {
-                    token: Box::new(RegexToken::Char(c_)),
+                patterns.push(Pattern::Quantifier {
+                    pattern: Box::new(pattern),
                     kind: match c {
                         '+' => Quantity::OneOrMore,
                         '*' => Quantity::ZeroOrMore,
-                        '?' => Quantity::OneOrZero,
+                        '?' => Quantity::ZeroOrOne,
                         _ => unreachable!(),
                     },
                 });
             }
             _ => {
-                tokens.push(RegexToken::Char(c));
+                patterns.push(Pattern::Char(c));
             }
         }
     }
-    tokens
+    patterns
 }
 
-fn match_token(c: char, token: &RegexToken) -> bool {
-    match token {
-        RegexToken::Char(c_) => c == *c_ || *c_ == '.',
-        RegexToken::Class(c_class) => match c_class {
-            Escape::Digit => c.is_numeric(),
-            Escape::Alphaneumeric => c.is_alphanumeric() || c == '_',
+fn match_quantifier(
+    text: &[char],
+    pattern: &Pattern,
+    kind: &Quantity,
+    next_patterns: &[Pattern],
+) -> Option<usize> {
+    // try match once, if no match, all three cases return, else ? returns and other two continue
+    let mut size = 0;
+    match match_substr(text, std::slice::from_ref(pattern)) {
+        Some(next_size) => match kind {
+            Quantity::ZeroOrOne => return Some(1),
+            _ => size += next_size,
         },
-        RegexToken::Group { group, negate } => match *negate {
-            true => group.iter().all(|t| !match_token(c, t)),
-            false => group.iter().any(|t| match_token(c, t)),
+        None => match kind {
+            Quantity::OneOrMore => return None,
+            _ => return Some(0),
         },
-        RegexToken::Boundary(_) => unreachable!(),
-        RegexToken::Quantifier { token: _, kind: _ } => unreachable!(),
+    }
+    // now keep looping for * and + until rest of pattern matches rest of string
+    loop {
+        if let Some(_) = match_substr(&text[size..], next_patterns) {
+            return Some(size);
+        }
+        if let Some(next_size) = match_substr(&text[size..], std::slice::from_ref(pattern)) {
+            size += next_size;
+        } else {
+            return Some(size);
+        }
     }
 }
 
-fn match_quantifier(text: &str, token: &RegexToken, kind: &Quantity, rest: &[RegexToken]) -> bool {
-    let mut iter = text.char_indices().peekable();
+// returns Some(size) of match, None if no match
+fn match_substr(text: &[char], patterns: &[Pattern]) -> Option<usize> {
+    eprintln!("{:?} - {:?}", text, patterns);
 
-    if *kind == Quantity::OneOrZero {
-        let Some((_, c_)) = iter.next() else {
-            // text ended so 0 matches
-            return match_substr("", rest);
-        };
-        if match_token(c_, token) {
-            // one match so check rest of text
-            return match_substr(&text[c_.len_utf8()..], rest);
-        } else {
-            // zero matches so check same text
-            return match_substr(text, rest);
-        }
-    }
-    if *kind == Quantity::OneOrMore {
-        let Some((_, c_)) = iter.next() else {
-            // text ended but needed at least one match
-            return false;
-        };
-        if !match_token(c_, token) {
-            // didn't get at least one match
-            return false;
-        }
-    }
-    while let Some((i, c_)) = iter.peek() {
-        if match_substr(&text[*i..], rest) {
-            // rest of string matches rest of patterns
-            return true;
-        }
-        if match_token(*c_, token) {
-            // next char matched token so keep going
-            iter.next();
-        } else {
-            // nothing matched
-            return false;
-        }
-    }
-    match_substr("", rest)
-}
-
-fn match_substr(text: &str, pattern: &[RegexToken]) -> bool {
-    // eprintln!("{:?} - {:?}", text, pattern);
-    if pattern.len() == 0 {
+    if patterns.is_empty() {
         // pattern ended, nothing more to check
-        return true;
+        return Some(0);
     }
-    if pattern[0] == RegexToken::Boundary(Line::End) {
-        // must be at end of string if token is $
-        return text.len() == 0;
+    if text.is_empty() {
+        if let Pattern::Boundary(Line::End) = patterns[0] {
+            // end of string matches $
+            return Some(0);
+        }
+        if let Pattern::Quantifier { pattern: _, kind } = &patterns[0] {
+            if matches!(kind, Quantity::ZeroOrMore | Quantity::ZeroOrOne) {
+                return Some(0);
+            }
+        }
+        // we still have patterns (not $, *, or ?) but text ended
+        return None;
     }
-    if let RegexToken::Quantifier { token, kind } = &pattern[0] {
-        // quantifier recursively comes back in here
-        return match_quantifier(text, token.as_ref(), kind, &pattern[1..]);
+
+    let next_p = &patterns[0];
+    let next_c = text[0];
+
+    let result = match next_p {
+        Pattern::Char(pattern_c) => (next_c == *pattern_c || *pattern_c == '.').then_some(1),
+        Pattern::Class(c_class) => match c_class {
+            Escape::Digit => next_c.is_numeric().then_some(1),
+            Escape::Alphaneumeric => (next_c.is_alphanumeric() || next_c == '_').then_some(1),
+        },
+        Pattern::Group { group, negate } => match *negate {
+            true => group
+                .iter()
+                .all(|p| match_substr(text, std::slice::from_ref(p)).is_none())
+                .then_some(1),
+            false => group
+                .iter()
+                .any(|p| match_substr(text, std::slice::from_ref(p)).is_some())
+                .then_some(1),
+        },
+        Pattern::Quantifier { pattern, kind } => {
+            match_quantifier(text, pattern, kind, &patterns[1..])
+        }
+        Pattern::Boundary(kind) => match kind {
+            Line::End => None,
+            Line::Start => unreachable!(),
+        },
+    };
+    let Some(size) = result else {
+        return None;
+    };
+
+    match match_substr(&text[size..], &patterns[1..]) {
+        Some(next_size) => Some(size + next_size),
+        None => None,
     }
-    if text.len() == 0 {
-        // we still have tokens but text ended
-        return false;
-    }
-    let c = text.chars().next().unwrap();
-    if match_token(c, &pattern[0]) {
-        let next = c.len_utf8();
-        // recursively match rest of string with rest of pattern
-        return match_substr(&text[next..], &pattern[1..]);
-    }
-    // should never hit
-    false
 }
 
-fn match_pattern(text: &str, pattern: &str) -> bool {
-    let regex_tokens = compile_pattern(pattern);
+fn match_pattern(text: &str, patterns: &str) -> bool {
+    let tokens = compile_regex(patterns);
+    let text = text.chars().collect::<Vec<char>>();
     // eprintln!("{:?}", regex_tokens);
 
-    if regex_tokens[0] == RegexToken::Boundary(Line::Start) {
+    if let Pattern::Boundary(Line::Start) = tokens[0] {
         // no need to test any other starting positions
-        return match_substr(text, &regex_tokens[1..]);
+        let result = match_substr(text.as_slice(), &tokens[1..]);
+        eprint!("{:?} - ", result);
+        return result.is_some();
     }
-
-    for (i, _) in text.char_indices() {
-        if match_substr(&text[i..], &regex_tokens) {
-            // if it didin't match, start again from next starting position
+    // test all starting positions
+    for start in 0..text.len() {
+        let result = match_substr(&text[start..], &tokens);
+        if result.is_some() {
+            eprint!("{:?} - ", result);
             return true;
         }
     }
     // tried all starting positions
+    eprint!("{:?} - ", None::<usize>);
     false
 }
 
@@ -221,7 +229,7 @@ fn main() {
     io::stdin().read_line(&mut input_line).unwrap();
 
     if match_pattern(&input_line, &pattern) {
-        eprintln!("Match");
+        eprintln!("Match!");
         process::exit(0)
     } else {
         eprintln!("No match");
