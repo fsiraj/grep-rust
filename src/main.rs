@@ -24,19 +24,25 @@ enum Quantity {
 #[derive(Debug, PartialEq)]
 enum Pattern {
     Char(char),
-    Boundary(Line),
     Class(Escape),
+    Bound(Line),
+    Group {
+        group: Regex,
+        negate: bool,
+    },
+    Alternates {
+        alternates: Alternates,
+    },
     Quantifier {
         pattern: Box<Pattern>,
         kind: Quantity,
     },
-    Group {
-        group: Vec<Pattern>,
-        negate: bool,
-    },
 }
 
-fn compile_regex(regex: &str) -> Vec<Pattern> {
+type Regex = Vec<Pattern>;
+type Alternates = Vec<Regex>;
+
+fn compile_regex(regex: &str) -> Regex {
     let mut iter = regex.char_indices();
     let mut patterns = Vec::new();
 
@@ -52,33 +58,69 @@ fn compile_regex(regex: &str) -> Vec<Pattern> {
                 _ => {}
             },
             '[' => {
-                let mut sub_pattern = String::new();
+                let mut subpattern = String::new();
                 loop {
                     match iter.next() {
                         Some((_, ']')) => break,
-                        Some((_, c_)) => sub_pattern.push(c_),
-                        None => panic!("invalid character group"),
+                        Some((_, other)) => subpattern.push(other),
+                        None => panic!("unclosed [ character group"),
                     }
                 }
-                if sub_pattern.len() > 0 {
+                if !subpattern.is_empty() {
                     let (start, negate) =
-                        if sub_pattern.len() > 1 && sub_pattern.chars().next().unwrap() == '^' {
+                        if subpattern.len() > 1 && subpattern.chars().next().unwrap() == '^' {
                             (1, true)
                         } else {
                             (0, false)
                         };
-                    let group = compile_regex(&sub_pattern[start..]);
+                    let group = compile_regex(&subpattern[start..]);
                     patterns.push(Pattern::Group {
                         group: group,
                         negate: negate,
                     });
                 }
             }
+            '(' => {
+                let mut depth = 0;
+                let mut subpattern = String::new();
+                let mut alternates = Vec::new();
+                loop {
+                    match iter.next() {
+                        Some((_, ')')) => {
+                            if depth == 0 {
+                                alternates.push(subpattern.clone());
+                                subpattern.clear();
+                                break;
+                            }
+                            depth -= 1;
+                            subpattern.push(')');
+                        }
+                        Some((_, '(')) => {
+                            depth += 1;
+                            subpattern.push('(');
+                        }
+                        Some((_, '|')) => {
+                            if depth == 0 {
+                                alternates.push(subpattern.clone());
+                                subpattern.clear();
+                                continue;
+                            }
+                            subpattern.push('|');
+                        }
+                        Some((_, other)) => subpattern.push(other),
+                        None => panic!("uncloded ( alternates group"),
+                    }
+                }
+                if !alternates.is_empty() {
+                    let alternates = alternates.iter().map(|r| compile_regex(r)).collect();
+                    patterns.push(Pattern::Alternates { alternates });
+                }
+            }
             '^' if i == 0 => {
-                patterns.push(Pattern::Boundary(Line::Start));
+                patterns.push(Pattern::Bound(Line::Start));
             }
             '$' if i == regex.len() - 1 => {
-                patterns.push(Pattern::Boundary(Line::End));
+                patterns.push(Pattern::Bound(Line::End));
             }
             '+' | '*' | '?' => {
                 let Some(pattern) = patterns.pop() else {
@@ -112,7 +154,7 @@ fn match_quantifier(
     let mut size = 0;
     match match_substr(text, std::slice::from_ref(pattern)) {
         Some(next_size) => match kind {
-            Quantity::ZeroOrOne => return Some(1),
+            Quantity::ZeroOrOne => return Some(next_size),
             _ => size += next_size,
         },
         None => match kind {
@@ -142,7 +184,7 @@ fn match_substr(text: &[char], patterns: &[Pattern]) -> Option<usize> {
         return Some(0);
     }
     if text.is_empty() {
-        if let Pattern::Boundary(Line::End) = patterns[0] {
+        if let Pattern::Bound(Line::End) = patterns[0] {
             // end of string matches $
             return Some(0);
         }
@@ -164,6 +206,10 @@ fn match_substr(text: &[char], patterns: &[Pattern]) -> Option<usize> {
             Escape::Digit => next_c.is_numeric().then_some(1),
             Escape::Alphaneumeric => (next_c.is_alphanumeric() || next_c == '_').then_some(1),
         },
+        Pattern::Bound(kind) => match kind {
+            Line::End => None,
+            Line::Start => unreachable!(),
+        },
         Pattern::Group { group, negate } => match *negate {
             true => group
                 .iter()
@@ -174,13 +220,10 @@ fn match_substr(text: &[char], patterns: &[Pattern]) -> Option<usize> {
                 .any(|p| match_substr(text, std::slice::from_ref(p)).is_some())
                 .then_some(1),
         },
+        Pattern::Alternates { alternates } => alternates.iter().find_map(|r| match_substr(text, r)),
         Pattern::Quantifier { pattern, kind } => {
             match_quantifier(text, pattern, kind, &patterns[1..])
         }
-        Pattern::Boundary(kind) => match kind {
-            Line::End => None,
-            Line::Start => unreachable!(),
-        },
     };
     let Some(size) = result else {
         return None;
@@ -192,28 +235,24 @@ fn match_substr(text: &[char], patterns: &[Pattern]) -> Option<usize> {
     }
 }
 
-fn match_pattern(text: &str, patterns: &str) -> bool {
-    let tokens = compile_regex(patterns);
+fn match_pattern(text: &str, patterns: &str) -> Option<usize> {
     let text = text.chars().collect::<Vec<char>>();
-    // eprintln!("{:?}", regex_tokens);
+    let regex = compile_regex(patterns);
+    eprintln!("{:?} ({:?})", text, text.len());
+    eprintln!("{:?}", regex);
 
-    if let Pattern::Boundary(Line::Start) = tokens[0] {
+    if let Pattern::Bound(Line::Start) = regex[0] {
         // no need to test any other starting positions
-        let result = match_substr(text.as_slice(), &tokens[1..]);
-        eprint!("{:?} - ", result);
-        return result.is_some();
+        return match_substr(text.as_slice(), &regex[1..]);
     }
     // test all starting positions
     for start in 0..text.len() {
-        let result = match_substr(&text[start..], &tokens);
-        if result.is_some() {
-            eprint!("{:?} - ", result);
-            return true;
+        if let Some(size) = match_substr(&text[start..], &regex) {
+            return Some(size);
         }
     }
     // tried all starting positions
-    eprint!("{:?} - ", None::<usize>);
-    false
+    None
 }
 
 // Usage: echo <input_text> | your_program.sh -E <pattern>
@@ -228,8 +267,8 @@ fn main() {
 
     io::stdin().read_line(&mut input_line).unwrap();
 
-    if match_pattern(&input_line, &pattern) {
-        eprintln!("Match!");
+    if let Some(size) = match_pattern(&input_line, &pattern) {
+        eprintln!("Match! ({} chars of {})", size, input_line.len());
         process::exit(0)
     } else {
         eprintln!("No match");
