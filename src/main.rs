@@ -1,4 +1,5 @@
 use std::env;
+use std::fs;
 use std::io;
 use std::process;
 
@@ -26,6 +27,7 @@ enum Pattern {
 type Regex = Vec<Pattern>;
 type Alternates = Vec<Regex>;
 
+// Returns an AST form of the regex
 fn compile_regex(regex: &str) -> Regex {
     let mut iter = regex.char_indices();
     let mut patterns = Vec::new();
@@ -39,7 +41,7 @@ fn compile_regex(regex: &str) -> Regex {
                 Some((_, 'w')) => {
                     patterns.push(Pattern::Class(Meta::Alphanumeric));
                 }
-                _ => panic!("invalid escape"),
+                _ => {}
             },
             '[' => {
                 let mut subpattern = String::new();
@@ -125,40 +127,53 @@ fn compile_regex(regex: &str) -> Regex {
     patterns
 }
 
+/// return Some(size) of match where size is shortest match of quantifier, None otherwise
 fn match_quantifier(
     text: &[char],
     pattern: &Pattern,
     kind: &Meta,
     next_patterns: &[Pattern],
 ) -> Option<usize> {
-    // try match once, if no match, all three cases return, else ? returns and other two continue
-    let mut size = 0;
-    match match_substr(text, std::slice::from_ref(pattern)) {
-        Some(next_size) => match kind {
-            Meta::ZeroOrOne => return Some(next_size),
-            _ => size += next_size,
-        },
-        None => match kind {
-            Meta::OneOrMore => return None,
-            _ => return Some(0),
-        },
-    }
-    // now keep looping for * and + until rest of pattern matches rest of string
+    let pattern = std::slice::from_ref(pattern);
+    // at least one match for +
+    let mut size = match kind {
+        Meta::OneOrMore => match_substr(text, pattern)?,
+        _ => 0,
+    };
     loop {
-        if match_substr(&text[size..], next_patterns).is_some() {
+        // try 0 matches for + and *, >1 for +
+        if text[size..].is_empty() && match_substr(&text[size..], next_patterns).is_some() {
             return Some(size);
         }
-        if let Some(next_size) = match_substr(&text[size..], std::slice::from_ref(pattern)) {
-            size += next_size;
-        } else {
+        if !next_patterns.is_empty() && match_substr(&text[size..], next_patterns).is_some() {
             return Some(size);
+        }
+        match kind {
+            Meta::ZeroOrOne => {
+                // don't loop for ?
+                return match_substr(&text[size..], pattern);
+            }
+            _ => {
+                // keep moving forward for + and *
+                if let Some(next_size) = match_substr(&text[size..], pattern) {
+                    size += next_size;
+                } else {
+                    eprintln!("alpha");
+                    return None;
+                }
+            }
         }
     }
 }
 
 // returns Some(size) of match, None if no match
 fn match_substr(text: &[char], patterns: &[Pattern]) -> Option<usize> {
-    // eprintln!("{:?} - {:?}", text, patterns);
+    // eprintln!(
+    //     "{:?} - {:?} ({:?})",
+    //     text.iter().collect::<String>(),
+    //     patterns.get(0).unwrap_or(&Pattern::Char('~')),
+    //     patterns.len()
+    // );
 
     if patterns.is_empty() {
         // pattern ended, nothing more to check
@@ -210,21 +225,17 @@ fn match_substr(text: &[char], patterns: &[Pattern]) -> Option<usize> {
             match_quantifier(text, pattern, kind, &patterns[1..])
         }
     };
-    let Some(size) = result else {
-        return None;
-    };
+    let size = result?;
 
-    match match_substr(&text[size..], &patterns[1..]) {
-        Some(next_size) => Some(size + next_size),
-        None => None,
-    }
+    Some(size + match_substr(&text[size..], &patterns[1..])?)
 }
 
-fn match_pattern(text: &str, patterns: &str) -> Option<usize> {
-    let text = text.chars().collect::<Vec<char>>();
-    let regex = compile_regex(patterns);
+fn match_pattern(text: &str, regex: &str) -> Option<usize> {
     // eprintln!("{:?} ({:?})", text, text.len());
-    // eprintln!("{:?}", regex);
+    // eprintln!("{:?} ({:?})", regex, regex.len());
+    let text = text.chars().collect::<Vec<char>>();
+    let regex = compile_regex(regex);
+    // eprintln!("\n{:?} ({:?})", regex, regex.len());
 
     if let Pattern::Bound(Meta::Start) = regex[0] {
         // no need to test any other starting positions
@@ -242,21 +253,149 @@ fn match_pattern(text: &str, patterns: &str) -> Option<usize> {
 
 // Usage: echo <input_text> | your_program.sh -E <pattern>
 fn main() {
-    if env::args().nth(1).unwrap() != "-E" {
-        println!("Expected first argument to be '-E'");
+    let args = env::args().collect::<Vec<String>>();
+    if args.len() < 3 || args[1] != "-E" {
+        println!("Usage: grep.sh -E <pattern> <file>");
+        println!("       echo <input> | grep.sh -E <pattern> <file>");
         process::exit(1);
     }
 
-    let pattern = env::args().nth(2).unwrap();
+    let pattern = &args[2];
     let mut input_line = String::new();
 
-    io::stdin().read_line(&mut input_line).unwrap();
+    if args.len() > 3 {
+        let filepath = &args[3];
+        input_line = fs::read_to_string(filepath).expect("unable to open file");
+        // eprintln!("{:?}", input_line);
+    } else {
+        io::stdin().read_line(&mut input_line).unwrap();
+    }
+    input_line = input_line.trim().to_string();
 
-    if let Some(size) = match_pattern(&input_line, &pattern) {
-        eprintln!("Match! ({} chars of {})", size, input_line.len());
+    if match_pattern(&input_line, &pattern).is_some() {
+        println!("{}", input_line);
         process::exit(0)
     } else {
-        eprintln!("No match");
         process::exit(1)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn matches(text: &str, regex: &str) -> bool {
+        match_pattern(text, regex).is_some()
+    }
+
+    #[test]
+    fn test_literal_character() {
+        assert!(matches("dog", "d"));
+        assert!(!matches("dog", "f"));
+    }
+
+    #[test]
+    fn test_digits() {
+        assert!(matches("123", r"\d"));
+        assert!(!matches("apple", r"\d"));
+    }
+
+    #[test]
+    fn test_alphanumeric() {
+        assert!(matches("pear", r"\w"));
+        assert!(matches("STRAWBERRY", r"\w"));
+        assert!(matches("129", r"\w"));
+        assert!(matches("+#-_-%÷", r"\w"));
+        assert!(!matches("%#÷=×+", r"\w"));
+    }
+
+    #[test]
+    fn test_positive_character_groups() {
+        assert!(matches("l", "[apple]"));
+        assert!(!matches("banana", "[cdefgh]"));
+        assert!(!matches("[]", "[pineapple]"));
+    }
+
+    #[test]
+    fn test_negative_character_groups() {
+        assert!(matches("apple", "[^xyz]"));
+        assert!(matches("apple", "[^abc]"));
+        assert!(!matches("banana", "[^anb]"));
+        assert!(matches("orange", "[^opq]"));
+    }
+
+    #[test]
+    fn test_combining_character_classes() {
+        assert!(matches("sally has 3 apples", r"\d apple"));
+        assert!(!matches("sally has 1 orange", r"\d apple"));
+        assert!(matches("sally has 124 apples", r"\d\d\d apples"));
+        assert!(!matches("sally has 12 apples", r"\d\\d\\d apples"));
+        assert!(matches("sally has 3 dogs", r"\d \w\w\ws"));
+        assert!(matches("sally has 4 dogs", r"\d \w\w\ws"));
+        assert!(!matches("sally has 1 dog", r"\d \w\w\ws"));
+    }
+
+    #[test]
+    fn test_start_of_string_anchor() {
+        assert!(matches("log", "^log"));
+        assert!(!matches("slog", "^log"));
+    }
+
+    #[test]
+    fn test_end_of_string_anchor() {
+        assert!(matches("cat", "cat$"));
+        assert!(!matches("cats", "cat$"));
+    }
+
+    #[test]
+    fn test_one_or_more_times() {
+        assert!(matches("cat", "ca+t"));
+        assert!(matches("caaats", "ca+at"));
+        assert!(matches("a", "a+"));
+        assert!(matches("aa", "a+a"));
+        assert!(matches("aa", "aa+"));
+        assert!(!matches("act", "ca+t"));
+        assert!(!matches("ca", "ca+t"));
+    }
+
+    #[test]
+    fn test_zero_or_more_times() {
+        assert!(matches("cat", "ca*t"));
+        assert!(matches("caaats", "ca*t"));
+        assert!(matches("a", "a*"));
+        assert!(matches("aa", "a*a"));
+        assert!(matches("aa", "aa*"));
+        assert!(!matches("act", "ca+t"));
+        assert!(!matches("ca", "ca+t"));
+    }
+
+    #[test]
+    fn test_zero_or_one_times() {
+        assert!(matches("cat", "ca?t"));
+        assert!(matches("act", "ca?t"));
+        assert!(!matches("dog", "ca?t"));
+        assert!(!matches("cag", "ca?t"));
+    }
+
+    #[test]
+    fn test_wildcard() {
+        assert!(matches("cat", "c.t"));
+        assert!(!matches("car", "c.t"));
+        assert!(matches("goøö0Ogol", "g.+gol"));
+        assert!(!matches("gol", "g.+gol"));
+    }
+
+    #[test]
+    fn test_alternation() {
+        assert!(matches("a cat", "a (cat|dog)"));
+        assert!(!matches("a cow", "a (cat|dog)"));
+        assert!(matches(
+            "I see 1 cat, 2 dogs and 3 cows",
+            "^I see (\\d (cat|dog|cow)s?(, | and )?)+$"
+        ));
+        assert!(!matches(
+            "I see 1 cat, 2 dogs and 3 cows",
+            "^I see (\\d (cat|dog|cow)(, | and )?)+$"
+        ));
     }
 }
