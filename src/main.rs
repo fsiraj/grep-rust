@@ -261,23 +261,34 @@ fn main() {
     }
 
     let pattern = &args[2];
-    let mut input_line = String::new();
+    let mut input_lines: Vec<String> = Vec::new();
 
     if args.len() > 3 {
         let filepath = &args[3];
-        input_line = fs::read_to_string(filepath).expect("unable to open file");
-        // eprintln!("{:?}", input_line);
+        let filecontent = fs::read_to_string(filepath).expect("unable to open file");
+        input_lines = filecontent.lines().map(str::to_string).collect();
     } else {
+        let mut input_line = String::new();
         io::stdin().read_line(&mut input_line).unwrap();
+        input_lines.push(input_line);
     }
-    input_line = input_line.trim().to_string();
+    // eprintln!("{:?}", input_lines);
 
-    if match_pattern(&input_line, &pattern).is_some() {
-        println!("{}", input_line);
-        process::exit(0)
-    } else {
-        process::exit(1)
+    let mut result = false;
+
+    for input_line in input_lines {
+        if match_pattern(&input_line, &pattern).is_some() {
+            println!("{}", input_line);
+            result = true
+        } else {
+            // eprintln!("No match");
+        }
     }
+
+    match result {
+        true => process::exit(0),
+        false => process::exit(1)
+    };
 }
 
 #[cfg(test)]
