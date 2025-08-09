@@ -5,6 +5,8 @@ use std::path::Path;
 use std::process;
 use walkdir::WalkDir;
 
+// Core matching logic
+
 #[derive(Debug, PartialEq)]
 enum Meta {
     Digit,
@@ -181,12 +183,13 @@ fn match_substr(text: &[char], patterns: &[Pattern]) -> Option<usize> {
         return Some(0);
     }
     if text.is_empty() {
-        if let Pattern::Bound(Meta::End) = patterns[0] {
+        if matches!(patterns[0], Pattern::Bound(Meta::End)) {
             // end of string matches $
             return Some(0);
         }
         if let Pattern::Quantifier { pattern: _, kind } = &patterns[0] {
             if matches!(kind, Meta::ZeroOrMore | Meta::ZeroOrOne) {
+                // can match empty string
                 return Some(0);
             }
         }
@@ -238,19 +241,34 @@ fn match_pattern(text: &str, regex: &str) -> Option<usize> {
     let regex = compile_regex(regex);
     // eprintln!("\n{:?} ({:?})", regex, regex.len());
 
-    if let Pattern::Bound(Meta::Start) = regex[0] {
+    if matches!(regex[0], Pattern::Bound(Meta::Start)) {
         // no need to test any other starting positions
         return match_substr(text.as_slice(), &regex[1..]);
     }
     // test all starting positions
-    for start in 0..text.len() {
-        if let Some(size) = match_substr(&text[start..], &regex) {
-            return Some(size);
-        }
-    }
-    // tried all starting positions
-    None
+    (0..text.len()).find_map(|start| match_substr(&text[start..], &regex))
 }
+
+// Helpers
+
+fn find_files_recursive(args: &Args) -> Vec<String> {
+    let root = Path::new(&args.paths[0]);
+    WalkDir::new(root)
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_file())
+        .map(|entry| entry.path().display().to_string())
+        .collect()
+}
+
+fn print_match(input: &str, fp: Option<&str>, show_prefix: bool) {
+    if show_prefix {
+        print!("{}:", fp.unwrap());
+    }
+    println!("{}", input);
+}
+
+// Argument Parsing
 
 #[derive(Parser, Debug)]
 struct Args {
@@ -263,70 +281,50 @@ struct Args {
     paths: Vec<String>,
 }
 
-// Usage: echo <input_text> | your_program.sh -E <pattern>
+// Main
+
 fn main() {
     let args = Args::parse();
     if args.recursive {
-        if args.paths.len() != 1 {
+        if args.paths.len() != 1 || !Path::new(&args.paths[0]).is_dir() {
             eprintln!("Error: -r requires exactyly one path to a directory.");
-            process::exit(1);
-        };
-        if !Path::new(&args.paths[0]).is_dir() {
             process::exit(1);
         };
     }
 
-    if !args.paths.is_empty() {
-        // collect filepaths
-        let filepaths = match args.recursive {
-            true => {
-                let root = Path::new(&args.paths[0]);
-                let mut filepaths = Vec::new();
-                for entry in WalkDir::new(root).into_iter().filter_map(Result::ok) {
-                    if entry.file_type().is_file() {
-                        filepaths.push(entry.path().display().to_string());
+    let mut found = false;
+    match !args.paths.is_empty() {
+        true => {
+            let filepaths = match args.recursive {
+                true => find_files_recursive(&args),
+                false => args.paths,
+            };
+            for fp in &filepaths {
+                // eprintln!("Processing {:?}...", fp);
+                let filecontent = fs::read_to_string(fp).expect("unable to open file");
+                let input_lines: Vec<String> = filecontent.lines().map(str::to_string).collect();
+                for input in input_lines {
+                    if match_pattern(&input, &args.expression).is_some() {
+                        print_match(&input, Some(fp), filepaths.len() > 1 || args.recursive);
+                        found = true;
                     }
-                }
-                filepaths
-            }
-            false => args.paths,
-        };
-        // check all files
-        let mut found = false;
-
-        for fp in &filepaths {
-            // eprintln!("Processing {:?}...", fp);
-            let filecontent = fs::read_to_string(fp).expect("unable to open file");
-            let input_lines: Vec<String> = filecontent.lines().map(str::to_string).collect();
-            for input in input_lines {
-                if match_pattern(&input, &args.expression).is_some() {
-                    if filepaths.len() > 1 || args.recursive {
-                        print!("{}:", fp);
-                    }
-                    println!("{}", input);
-                    found = true;
-                } else {
-                    // eprintln!("No match");
                 }
             }
         }
+        false => {
+            // simple stdin case
+            let mut input = String::new();
+            io::stdin().read_line(&mut input).unwrap();
+            if match_pattern(&input, &args.expression).is_some() {
+                print_match(&input, None, false);
+                found = true;
+            }
+        }
+    }
 
-        // check for success
-        match found {
-            true => process::exit(0),
-            false => process::exit(1),
-        }
-    } else {
-        // simple stdin case
-        let mut input = String::new();
-        io::stdin().read_line(&mut input).unwrap();
-        if match_pattern(&input, &args.expression).is_some() {
-            println!("{}", input);
-            process::exit(0)
-        } else {
-            // eprintln!("No match");
-            process::exit(1)
-        }
+    match found {
+        true => process::exit(0),
+        false => process::exit(1),
     }
 }
 
