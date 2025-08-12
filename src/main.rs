@@ -36,6 +36,7 @@ type Alternates = Vec<Regex>;
 fn compile_regex(regex: &str) -> Regex {
     let mut iter = regex.char_indices();
     let mut patterns = Vec::new();
+    let mut num_capture_groups = 0;
 
     while let Some((i, c)) = iter.next() {
         match c {
@@ -46,6 +47,9 @@ fn compile_regex(regex: &str) -> Regex {
                     let index = other.to_digit(10).unwrap() as usize;
                     if index == 0 {
                         panic!("backref are 1-indexed, upto 9")
+                    }
+                    if index > num_capture_groups {
+                        panic!("invalid backreference")
                     }
                     patterns.push(Pattern::BackRef(index))
                 }
@@ -105,6 +109,7 @@ fn compile_regex(regex: &str) -> Regex {
                     patterns.push(Pattern::CaptureGroup {
                         regexes: alternates,
                     });
+                    num_capture_groups += 1;
                 }
             }
             '^' if i == 0 => {
@@ -151,11 +156,11 @@ fn match_group(text: &[char], group: &Vec<Pattern>, negate: &bool) -> Option<usi
     match *negate {
         true => group
             .iter()
-            .all(|p| match_substr(text, std::slice::from_ref(p)).is_none())
+            .all(|p| match_substr(text, std::slice::from_ref(p), None).is_none())
             .then_some(1),
         false => group
             .iter()
-            .any(|p| match_substr(text, std::slice::from_ref(p)).is_some())
+            .any(|p| match_substr(text, std::slice::from_ref(p), None).is_some())
             .then_some(1),
     }
 }
@@ -165,32 +170,41 @@ fn match_quantifier(
     pattern: &Pattern,
     kind: &Meta,
     next_patterns: &[Pattern],
+    captures: &mut Vec<String>,
 ) -> Option<usize> {
     let pattern = std::slice::from_ref(pattern);
     // at least one match for +
     let mut size = match kind {
-        Meta::OneOrMore => match_substr(text, pattern)?,
+        Meta::OneOrMore => match_substr(text, pattern, Some(captures))?,
         _ => 0,
     };
     loop {
         // try 0 matches for + and *, >1 for +
-        if text[size..].is_empty() && match_substr(&text[size..], next_patterns).is_some() {
+        if text[size..].is_empty()
+            && match_substr(&text[size..], next_patterns, Some(captures)).is_some()
+        {
             return Some(size);
         }
-        if !next_patterns.is_empty() && match_substr(&text[size..], next_patterns).is_some() {
+        if !next_patterns.is_empty()
+            && match_substr(&text[size..], next_patterns, Some(captures)).is_some()
+        {
             return Some(size);
         }
         match kind {
             Meta::ZeroOrOne => {
                 // don't loop for ?
-                return match_substr(&text[size..], pattern);
+                return match_substr(&text[size..], pattern, Some(captures));
             }
             _ => {
                 // keep moving forward for + and *
-                if let Some(next_size) = match_substr(&text[size..], pattern) {
+                if let Some(next_size) = match_substr(&text[size..], pattern, Some(captures)) {
                     size += next_size;
                 } else {
-                    return None;
+                    match kind {
+                        Meta::OneOrMore => return Some(size),
+                        Meta::ZeroOrMore => return None,
+                        _ => unreachable!(),
+                    }
                 }
             }
         }
@@ -198,17 +212,33 @@ fn match_quantifier(
 }
 
 fn match_alternates(text: &[char], alternates: &Vec<Vec<Pattern>>) -> Option<usize> {
-    alternates.iter().find_map(|r| match_substr(text, r))
+    alternates.iter().find_map(|r| match_substr(text, r, None))
+}
+
+fn match_backreference(text: &[char], captures: &mut Vec<String>, index: &usize) -> Option<usize> {
+    let capture = &captures[*index - 1].chars().collect::<Vec<char>>();
+    // eprintln!("matching backref {} with {}", index, capture);
+    if text.len() >= capture.len() && &text[..capture.len()] == capture.as_slice() {
+        Some(capture.len())
+    } else {
+        None
+    }
 }
 
 // returns Some(size) of match, None if no match
-fn match_substr(text: &[char], patterns: &[Pattern]) -> Option<usize> {
+fn match_substr(
+    text: &[char],
+    patterns: &[Pattern],
+    captures: Option<&mut Vec<String>>,
+) -> Option<usize> {
     // eprintln!(
     //     "{:?} - {:?} ({:?})",
     //     text.iter().collect::<String>(),
     //     patterns.get(0).unwrap_or(&Pattern::Char('~')),
     //     patterns.len()
     // );
+    let mut empty_regex_vec = Vec::<String>::new();
+    let captures = captures.unwrap_or(&mut empty_regex_vec);
 
     if patterns.is_empty() {
         return Some(0);
@@ -241,29 +271,36 @@ fn match_substr(text: &[char], patterns: &[Pattern]) -> Option<usize> {
         Pattern::CharGroup { group, negate } => match_group(text, group, negate),
         Pattern::CaptureGroup {
             regexes: alternates,
-        } => match_alternates(text, alternates),
-        Pattern::Quantifier { pattern, kind } => {
-            match_quantifier(text, pattern, kind, &patterns[1..])
+        } => {
+            if let Some(size) = match_alternates(text, alternates) {
+                let capture = text[..size].iter().collect::<String>();
+                captures.push(capture);
+                Some(size)
+            } else {
+                None
+            }
         }
-        Pattern::BackRef(_index) => unimplemented!(),
+        Pattern::Quantifier { pattern, kind } => {
+            match_quantifier(text, pattern, kind, &patterns[1..], captures)
+        }
+        Pattern::BackRef(index) => match_backreference(text, captures, index),
     };
     let size = result?;
-    Some(size + match_substr(&text[size..], &patterns[1..])?)
+    Some(size + match_substr(&text[size..], &patterns[1..], Some(captures))?)
 }
 
 fn match_pattern(text: &str, regex: &str) -> Option<usize> {
-    // eprintln!("{:?} ({:?})", text, text.len());
-    // eprintln!("{:?} ({:?})", regex, regex.len());
     let text = text.chars().collect::<Vec<char>>();
     let regex = compile_regex(regex);
-    // eprintln!("\n{:?} ({:?})", regex, regex.len());
+    // eprintln!("{:?} ({:?})", text, text.len());
+    // eprintln!("{:?} ({:?})\n", regex, regex.len());
 
     if matches!(regex[0], Pattern::Bound(Meta::Start)) {
         // no need to test any other starting positions
-        return match_substr(text.as_slice(), &regex[1..]);
+        return match_substr(text.as_slice(), &regex[1..], None);
     }
     // test all starting positions
-    (0..text.len()).find_map(|start| match_substr(&text[start..], &regex))
+    (0..text.len()).find_map(|start| match_substr(&text[start..], &regex, None))
 }
 
 // Helpers
@@ -465,6 +502,88 @@ mod tests {
         assert!(!matches(
             "I see 1 cat, 2 dogs and 3 cows",
             "^I see (\\d (cat|dog|cow)(, | and )?)+$"
+        ));
+    }
+
+    #[test]
+    fn test_backreference_basic() {
+        assert!(matches("cat and cat", "(cat) and \\1"));
+        assert!(!matches("cat and dog", "(cat) and \\1"));
+    }
+
+    #[test]
+    fn test_backreference_complex_word_digit() {
+        assert!(matches(
+            "grep 101 is doing grep 101 times",
+            "(\\w\\w\\w\\w \\d\\d\\d) is doing \\1 times"
+        ));
+        assert!(!matches(
+            "$?! 101 is doing $?! 101 times",
+            "(\\w\\w\\w \\d\\d\\d) is doing \\1 times"
+        ));
+        assert!(!matches(
+            "grep yes is doing grep yes times",
+            "(\\w\\w\\w\\w \\d\\d\\d) is doing \\1 times"
+        ));
+    }
+
+    #[test]
+    fn test_backreference_char_group() {
+        assert!(matches(
+            "abcd is abcd, not efg",
+            "([abcd]+) is \\1, not [^xyz]+"
+        ));
+        assert!(!matches(
+            "efgh is efgh, not efg",
+            "([abcd]+) is \\1, not [^xyz]+"
+        ));
+        assert!(!matches(
+            "abcd is abcd, not xyz",
+            "([abcd]+) is \\1, not [^xyz]+"
+        ));
+    }
+
+    #[test]
+    fn test_backreference_anchors() {
+        assert!(matches(
+            "this starts and ends with this",
+            "^(\\w+) starts and ends with \\1$"
+        ));
+        assert!(!matches(
+            "that starts and ends with this",
+            "^(this) starts and ends with \\1$"
+        ));
+        assert!(!matches(
+            "this starts and ends with this?",
+            "^(this) starts and ends with \\1$"
+        ));
+    }
+
+    #[test]
+    fn test_backreference_quantifier() {
+        assert!(matches(
+            "once a dreaaamer, always a dreaaamer",
+            "once a (drea+mer), alwaysz? a \\1"
+        ));
+        assert!(!matches(
+            "once a dremer, always a dreaaamer",
+            "once a (drea+mer), alwaysz? a \\1"
+        ));
+        assert!(!matches(
+            "once a dreaaamer, alwayszzz a dreaaamer",
+            "once a (drea+mer), alwaysz? a \\1"
+        ));
+    }
+
+    #[test]
+    fn test_backreference_alternation() {
+        assert!(matches(
+            "bugs here and bugs there",
+            "(b..s|c..e) here and \\1 there"
+        ));
+        assert!(!matches(
+            "bugz here and bugs there",
+            "(b..s|c..e) here and \\1 there"
         ));
     }
 }
