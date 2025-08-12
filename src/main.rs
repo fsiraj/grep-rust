@@ -1,7 +1,7 @@
 use clap::Parser;
 use std::fs;
 use std::io;
-use std::path::Path;
+use std::path;
 use std::process;
 use walkdir::WalkDir;
 
@@ -23,9 +23,10 @@ enum Pattern {
     Char(char),
     Class(Meta),
     Bound(Meta),
-    Group { group: Regex, negate: bool },
-    Alternates { regexes: Alternates },
+    CharGroup { group: Regex, negate: bool },
+    CaptureGroup { regexes: Alternates },
     Quantifier { pattern: Box<Pattern>, kind: Meta },
+    BackRef(usize),
 }
 
 type Regex = Vec<Pattern>;
@@ -39,11 +40,14 @@ fn compile_regex(regex: &str) -> Regex {
     while let Some((i, c)) = iter.next() {
         match c {
             '\\' => match iter.next() {
-                Some((_, 'd')) => {
-                    patterns.push(Pattern::Class(Meta::Digit));
-                }
-                Some((_, 'w')) => {
-                    patterns.push(Pattern::Class(Meta::Alphanumeric));
+                Some((_, 'd')) => patterns.push(Pattern::Class(Meta::Digit)),
+                Some((_, 'w')) => patterns.push(Pattern::Class(Meta::Alphanumeric)),
+                Some((_, other)) if other.is_numeric() => {
+                    let index = other.to_digit(10).unwrap() as usize;
+                    if index == 0 {
+                        panic!("backref are 1-indexed, upto 9")
+                    }
+                    patterns.push(Pattern::BackRef(index))
                 }
                 _ => {}
             },
@@ -63,7 +67,7 @@ fn compile_regex(regex: &str) -> Regex {
                         (0, false)
                     };
                     let group = compile_regex(&subpattern[start..]);
-                    patterns.push(Pattern::Group { group, negate });
+                    patterns.push(Pattern::CharGroup { group, negate });
                 }
             }
             '(' => {
@@ -98,7 +102,7 @@ fn compile_regex(regex: &str) -> Regex {
                 }
                 if !alternates.is_empty() {
                     let alternates = alternates.iter().map(|r| compile_regex(r)).collect();
-                    patterns.push(Pattern::Alternates {
+                    patterns.push(Pattern::CaptureGroup {
                         regexes: alternates,
                     });
                 }
@@ -131,7 +135,31 @@ fn compile_regex(regex: &str) -> Regex {
     patterns
 }
 
-/// return Some(size) of match where size is shortest match of quantifier, None otherwise
+fn match_char(next_c: &char, pattern_c: &char) -> Option<usize> {
+    (*next_c == *pattern_c || *pattern_c == '.').then_some(1)
+}
+
+fn match_digit(next_c: &char) -> Option<usize> {
+    next_c.is_numeric().then_some(1)
+}
+
+fn match_alphanumeric(next_c: &char) -> Option<usize> {
+    (next_c.is_alphanumeric() || *next_c == '_').then_some(1)
+}
+
+fn match_group(text: &[char], group: &Vec<Pattern>, negate: &bool) -> Option<usize> {
+    match *negate {
+        true => group
+            .iter()
+            .all(|p| match_substr(text, std::slice::from_ref(p)).is_none())
+            .then_some(1),
+        false => group
+            .iter()
+            .any(|p| match_substr(text, std::slice::from_ref(p)).is_some())
+            .then_some(1),
+    }
+}
+
 fn match_quantifier(
     text: &[char],
     pattern: &Pattern,
@@ -169,6 +197,10 @@ fn match_quantifier(
     }
 }
 
+fn match_alternates(text: &[char], alternates: &Vec<Vec<Pattern>>) -> Option<usize> {
+    alternates.iter().find_map(|r| match_substr(text, r))
+}
+
 // returns Some(size) of match, None if no match
 fn match_substr(text: &[char], patterns: &[Pattern]) -> Option<usize> {
     // eprintln!(
@@ -179,58 +211,43 @@ fn match_substr(text: &[char], patterns: &[Pattern]) -> Option<usize> {
     // );
 
     if patterns.is_empty() {
-        // pattern ended, nothing more to check
         return Some(0);
     }
     if text.is_empty() {
         if matches!(patterns[0], Pattern::Bound(Meta::End)) {
-            // end of string matches $
             return Some(0);
         }
         if let Pattern::Quantifier { pattern: _, kind } = &patterns[0] {
             if matches!(kind, Meta::ZeroOrMore | Meta::ZeroOrOne) {
-                // can match empty string
                 return Some(0);
             }
         }
-        // we still have patterns (not $, *, or ?) but text ended
         return None;
     }
 
     let next_p = &patterns[0];
-    let next_c = text[0];
-
+    let next_c = &text[0];
     let result = match next_p {
-        Pattern::Char(pattern_c) => (next_c == *pattern_c || *pattern_c == '.').then_some(1),
+        Pattern::Char(pattern_c) => match_char(next_c, pattern_c),
         Pattern::Class(c_class) => match c_class {
-            Meta::Digit => next_c.is_numeric().then_some(1),
-            Meta::Alphanumeric => (next_c.is_alphanumeric() || next_c == '_').then_some(1),
+            Meta::Digit => match_digit(next_c),
+            Meta::Alphanumeric => match_alphanumeric(next_c),
             _ => unreachable!(),
         },
         Pattern::Bound(kind) => match kind {
             Meta::End => None,
-            Meta::Start => unreachable!(),
             _ => unreachable!(),
         },
-        Pattern::Group { group, negate } => match *negate {
-            true => group
-                .iter()
-                .all(|p| match_substr(text, std::slice::from_ref(p)).is_none())
-                .then_some(1),
-            false => group
-                .iter()
-                .any(|p| match_substr(text, std::slice::from_ref(p)).is_some())
-                .then_some(1),
-        },
-        Pattern::Alternates {
+        Pattern::CharGroup { group, negate } => match_group(text, group, negate),
+        Pattern::CaptureGroup {
             regexes: alternates,
-        } => alternates.iter().find_map(|r| match_substr(text, r)),
+        } => match_alternates(text, alternates),
         Pattern::Quantifier { pattern, kind } => {
             match_quantifier(text, pattern, kind, &patterns[1..])
         }
+        Pattern::BackRef(_index) => unimplemented!(),
     };
     let size = result?;
-
     Some(size + match_substr(&text[size..], &patterns[1..])?)
 }
 
@@ -251,8 +268,7 @@ fn match_pattern(text: &str, regex: &str) -> Option<usize> {
 
 // Helpers
 
-fn find_files_recursive(args: &Args) -> Vec<String> {
-    let root = Path::new(&args.paths[0]);
+fn find_files_recursive(root: &str) -> Vec<String> {
     WalkDir::new(root)
         .into_iter()
         .filter_map(Result::ok)
@@ -286,7 +302,7 @@ struct Args {
 fn main() {
     let args = Args::parse();
     if args.recursive {
-        if args.paths.len() != 1 || !Path::new(&args.paths[0]).is_dir() {
+        if args.paths.len() != 1 || !path::Path::new(&args.paths[0]).is_dir() {
             eprintln!("Error: -r requires exactyly one path to a directory.");
             process::exit(1);
         };
@@ -294,23 +310,27 @@ fn main() {
 
     let mut found = false;
     match !args.paths.is_empty() {
+        // filepaths or directory
         true => {
-            let filepaths = match args.recursive {
-                true => find_files_recursive(&args),
-                false => args.paths,
+            let filepaths = if args.recursive {
+                find_files_recursive(&args.paths[0])
+            } else {
+                args.paths
             };
+            let show_prefix = filepaths.len() > 1 || args.recursive;
             for fp in &filepaths {
                 // eprintln!("Processing {:?}...", fp);
-                let filecontent = fs::read_to_string(fp).expect("unable to open file");
-                let input_lines: Vec<String> = filecontent.lines().map(str::to_string).collect();
-                for input in input_lines {
-                    if match_pattern(&input, &args.expression).is_some() {
-                        print_match(&input, Some(fp), filepaths.len() > 1 || args.recursive);
+                fs::read_to_string(fp)
+                    .expect("unable to open file")
+                    .lines()
+                    .filter(|input| match_pattern(input, &args.expression).is_some())
+                    .for_each(|input| {
+                        print_match(&input, Some(fp), show_prefix);
                         found = true;
-                    }
-                }
+                    });
             }
         }
+        // stdin
         false => {
             // simple stdin case
             let mut input = String::new();
@@ -322,9 +342,10 @@ fn main() {
         }
     }
 
-    match found {
-        true => process::exit(0),
-        false => process::exit(1),
+    if found {
+        process::exit(0)
+    } else {
+        process::exit(1)
     }
 }
 
