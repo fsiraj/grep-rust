@@ -170,6 +170,15 @@ fn token_to_nfa(token: &Token) -> (StatePtr, StatePtr) {
                 add_transition(EPSILON, &token_end, &end);
                 add_transition(EPSILON, &token_end, &token_start);
             }
+            Meta::ExactCount(count) => {
+                let mut end_prev = start.clone();
+                for _ in 0..*count {
+                    let (start_next, end_next) = token_to_nfa(token);
+                    add_transition(EPSILON, &end_prev, &start_next);
+                    end_prev = end_next;
+                }
+                add_transition(EPSILON, &end_prev, &end);
+            }
             _ => unreachable!(),
         },
         // Create a special transition that validates the backreference

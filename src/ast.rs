@@ -11,6 +11,7 @@ pub enum Meta {
     OneOrMore,
     ZeroOrMore,
     ZeroOrOne,
+    ExactCount(usize),
 }
 
 // Represent the Abstract Syntax Tree
@@ -147,6 +148,26 @@ pub fn string_to_ast(regex: &str, capture_index: &mut usize) -> Vec<Token> {
                         '?' => Meta::ZeroOrOne,
                         _ => unreachable!(),
                     },
+                });
+            }
+            '{' => {
+                let Some(pattern) = patterns.pop() else {
+                    panic!("quantifier missing pattern");
+                };
+                let mut subpattern = String::new();
+                loop {
+                    match iter.next() {
+                        Some((_, '}')) => break,
+                        Some((_, other)) => subpattern.push(other),
+                        None => panic!("unclosed {{ quantifier"),
+                    };
+                }
+                let count = subpattern
+                    .parse::<usize>()
+                    .expect("exact quantifier count must be an integer");
+                patterns.push(Token::Quantifier {
+                    token: Rc::new(pattern),
+                    kind: Meta::ExactCount(count),
                 });
             }
             // Literal characters are trivial
