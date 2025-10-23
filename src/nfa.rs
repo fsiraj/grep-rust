@@ -170,9 +170,17 @@ fn token_to_nfa(token: &Token) -> (StatePtr, StatePtr) {
                 add_transition(EPSILON, &token_end, &end);
                 add_transition(EPSILON, &token_end, &token_start);
             }
-            Meta::ExactCount(count) => {
-                let mut end_prev = start.clone();
-                for _ in 0..*count {
+            Meta::Repeat(lo, hi) => {
+                let mut end_prev = Rc::clone(&start);
+                // required repetitions
+                for _ in 0..*lo {
+                    let (start_next, end_next) = token_to_nfa(token);
+                    add_transition(EPSILON, &end_prev, &start_next);
+                    end_prev = end_next;
+                }
+                // optional repetitions
+                for _ in 0..(hi-lo) {
+                    add_transition(EPSILON, &end_prev, &end);
                     let (start_next, end_next) = token_to_nfa(token);
                     add_transition(EPSILON, &end_prev, &start_next);
                     end_prev = end_next;
@@ -270,7 +278,7 @@ pub fn simulate_nfa(
             }
 
             // Any character transitions (excludes ^ and $)
-            c if c == ANY && ch != '^' && ch != '$' => {
+            c if c == ANY && ch != START_OF_TEXT && ch != END_OF_TEXT => {
                 if !has_deadend_transition(&state_ref, ch) {
                     for next_state in next_states {
                         if simulate_nfa(Rc::clone(next_state), text, pos + 1, context) {

@@ -11,7 +11,7 @@ pub enum Meta {
     OneOrMore,
     ZeroOrMore,
     ZeroOrOne,
-    ExactCount(usize),
+    Repeat(usize, usize),
 }
 
 // Represent the Abstract Syntax Tree
@@ -33,6 +33,13 @@ pub enum Token {
         kind: Meta,
     },
     BackRef(usize),
+}
+
+pub fn parse_int(count: &str) -> usize {
+    let count = count
+        .parse::<usize>()
+        .expect("{n,m} must contain ints n and m");
+    count
 }
 
 // Parses a string into an AST
@@ -162,13 +169,44 @@ pub fn string_to_ast(regex: &str, capture_index: &mut usize) -> Vec<Token> {
                         None => panic!("unclosed {{ quantifier"),
                     };
                 }
-                let count = subpattern
-                    .parse::<usize>()
-                    .expect("exact quantifier count must be an integer");
-                patterns.push(Token::Quantifier {
-                    token: Rc::new(pattern),
-                    kind: Meta::ExactCount(count),
-                });
+                let parts = subpattern.split(',').collect::<Vec<&str>>();
+                match parts.len() {
+                    // {n} - exact count
+                    1 => {
+                        let count = parse_int(parts[0]);
+                        patterns.push(Token::Quantifier {
+                            token: Rc::new(pattern),
+                            kind: Meta::Repeat(count, count),
+                        })
+                    }
+                    // {n,} or {n,m}
+                    2 => {
+                        let n = parse_int(parts[0]);
+                        if parts[1].is_empty() {
+                            let pattern_rc = Rc::new(pattern);
+                            // {n,} = {n} -> *
+                            patterns.push(Token::Quantifier {
+                                token: Rc::clone(&pattern_rc),
+                                kind: Meta::Repeat(n, n),
+                            });
+                            patterns.push(Token::Quantifier {
+                                token: pattern_rc,
+                                kind: Meta::ZeroOrMore,
+                            });
+                        } else {
+                            // {n,m}
+                            let m = parse_int(parts[1]);
+                            if n > m {
+                                panic!("n > m in {{n,m}} quantifier")
+                            }
+                            patterns.push(Token::Quantifier {
+                                token: Rc::new(pattern),
+                                kind: Meta::Repeat(n, m),
+                            });
+                        }
+                    }
+                    _ => panic!("invalid {{n,m}} quantifier syntax"),
+                };
             }
             // Literal characters are trivial
             _ => {

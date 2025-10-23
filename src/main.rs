@@ -223,6 +223,8 @@ mod tests {
         assert!(matches("anything", "^"));
         assert!(matches("aaa", "^a+"));
         assert!(!matches("baaa", "^a+"));
+        assert!(matches("123-456-7890", r"^\d{2,3}-\d{3}-\d{4}"));
+        assert!(!matches("1234-456-7890", r"^\d{2,3}-\d{3}-\d{4}"));
     }
 
     #[test]
@@ -236,6 +238,8 @@ mod tests {
         assert!(matches("anything", "$"));
         assert!(matches("aaa", "a+$"));
         assert!(!matches("aaab", "a+$"));
+        assert!(matches("ahello", "a{0,2}hello$"));
+        assert!(matches("aaahello", "a{0,2}hello$"));
     }
 
     #[test]
@@ -244,6 +248,11 @@ mod tests {
         assert!(!matches("hello world", "^hello$"));
         assert!(!matches("say hello", "^hello$"));
         assert!(!matches("a", "^$"));
+        assert!(matches("catcatcatcat", "^(cat){2,4}$"));
+        assert!(!matches("catcatcatcatcat", "^(cat){2,4}$"));
+        assert!(matches("123-456-7890", r"^\d{2,3}-\d{3}-\d{4}$"));
+        assert!(matches("12-456-7890", r"^\d{2,3}-\d{3}-\d{4}$"));
+        assert!(!matches("1234-456-7890", r"^\d{2,3}-\d{3}-\d{4}$"));
     }
 
     #[test]
@@ -323,6 +332,52 @@ mod tests {
     }
 
     #[test]
+    fn test_range_quantifier() {
+        assert!(matches("caat", "ca{2,4}t"));
+        assert!(matches("caaat", "ca{2,4}t"));
+        assert!(matches("caaaat", "ca{2,4}t"));
+        assert!(!matches("cat", "ca{2,4}t"));
+        assert!(!matches("caaaaat", "ca{2,4}t"));
+        assert!(matches("n123m", r"n\d{1,3}m"));
+        assert!(!matches("n1234m", r"n\d{1,3}m"));
+        assert!(matches("pxyq", "p[xyz]{2,3}q"));
+        assert!(matches("pxyzq", "p[xyz]{2,3}q"));
+        assert!(!matches("pxq", "p[xyz]{2,3}q"));
+        assert!(!matches("pxyzyq", "p[xyz]{2,3}q"));
+    }
+
+    #[test]
+    fn test_range_quantifier_edge_cases() {
+        assert!(matches("ct", "ca{0,2}t"));
+        assert!(matches("cat", "ca{0,2}t"));
+        assert!(matches("caat", "ca{0,2}t"));
+        assert!(!matches("caaat", "ca{0,2}t"));
+        assert!(matches("hello", "a{0,5}hello"));
+        assert!(matches("aahello", "a{0,5}hello"));
+        assert!(matches("aaahello", "a{0,2}hello"));
+    }
+
+    #[test]
+    fn test_unbounded_quantifier() {
+        assert!(matches("caat", "ca{2,}t"));
+        assert!(matches("caaat", "ca{2,}t"));
+        assert!(matches("caaaaaaat", "ca{2,}t"));
+        assert!(!matches("cat", "ca{2,}t"));
+        assert!(matches("x9999y", r"x\d{3,}y"));
+        assert!(!matches("x42y", r"x\d{3,}y"));
+        assert!(matches("baeiour", "b[aeiou]{2,}r"));
+        assert!(!matches("bar", "b[aeiou]{2,}r"));
+    }
+
+    #[test]
+    fn test_unbounded_quantifier_edge_cases() {
+        assert!(matches("hello", "a{0,}hello"));
+        assert!(matches("aaaaaahello", "a{0,}hello"));
+        assert!(matches("aaaaaaaaaa", "a{1,}"));
+        assert!(!matches("", "a{1,}"));
+    }
+
+    #[test]
     fn test_wildcard() {
         assert!(matches("cat", "c.t"));
         assert!(!matches("car", "c.t"));
@@ -385,6 +440,10 @@ mod tests {
         assert!(matches("hihello", "(hi)?hello"));
         assert!(matches("catcatcat", "(cat){3}"));
         assert!(!matches("catcat", "(cat){3}"));
+        assert!(matches("catcat", "(cat){2,4}"));
+        assert!(matches("catcatcatcat", "(cat){2,4}"));
+        assert!(!matches("cat", "(cat){2,4}"));
+        assert!(matches("catcatcatcatcat", "(cat){2,4}"));
     }
 
     #[test]
@@ -395,6 +454,9 @@ mod tests {
         assert!(!matches("12-456-7890", r"\d\d\d-\d\d\d-\d\d\d\d"));
         assert!(matches("123-456-7890", r"\d{3}-\d{3}-\d{4}"));
         assert!(!matches("12-456-7890", r"\d{3}-\d{3}-\d{4}"));
+        assert!(matches("12-456-7890", r"\d{2,3}-\d{3}-\d{4}"));
+        assert!(matches("123-45-6789", r"\d{2,3}-\d{2,3}-\d{4}"));
+        assert!(matches("1234-456-7890", r"\d{2,3}-\d{3}-\d{4}"));
     }
 
     #[test]
@@ -409,6 +471,9 @@ mod tests {
         assert!(!matches("abbc", "a{2}b{2}c{2}"));
         assert!(matches("bccccdd", "a?b*c+d{2}"));
         assert!(!matches("abcd", "a?b*c+d{2}"));
+        assert!(matches("aabbbcc", "a{2}b{2,4}c{2}"));
+        assert!(matches("aabbbbcc", "a{2}b{2,4}c{2}"));
+        assert!(!matches("aabbbbbcc", "a{2}b{2,4}c{2}"));
     }
 
     #[test]
@@ -420,6 +485,9 @@ mod tests {
         assert!(!matches("x", r"(\d|[abc])"));
         assert!(matches("aaaa", "^a{4}$"));
         assert!(!matches("aaa", "^a{4}$"));
+        assert!(matches("aaa", "^a{2,5}$"));
+        assert!(matches("aaaa", "^a{2,5}$"));
+        assert!(!matches("aaaaaa", "^a{2,5}$"));
     }
 
     #[test]
