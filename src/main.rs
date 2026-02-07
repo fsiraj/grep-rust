@@ -4,6 +4,7 @@ mod nfa;
 use clap::Parser;
 use std::fs;
 use std::io;
+use std::io::Read;
 use std::path;
 use std::process;
 use std::rc::Rc;
@@ -99,13 +100,16 @@ fn main() {
         }
         // stdin
         false => {
-            // simple stdin case
             let mut input = String::new();
-            io::stdin().read_line(&mut input).unwrap();
-            if match_pattern(&input, &args.expression) {
-                print_match(&input, None, false);
-                found = true;
-            }
+            io::stdin()
+                .read_to_string(&mut input)
+                .expect("unable to read from stdin");
+            input
+                .lines()
+                .filter(|line| match_pattern(line, &args.expression))
+                .for_each(|line| {
+                    print_match(line, None, false);
+                });
         }
     }
 
