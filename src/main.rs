@@ -109,6 +109,7 @@ fn main() {
                 .filter(|line| match_pattern(line, &args.expression))
                 .for_each(|line| {
                     print_match(line, None, false);
+                    found = true;
                 });
         }
     }
