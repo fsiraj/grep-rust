@@ -180,10 +180,10 @@ fn token_to_nfa(token: &Token) -> (StatePtr, StatePtr) {
         // ε-transition from token_end to token_start enables ∞ matches
         Token::Quantifier { token, kind } => match kind {
             Meta::ZeroOrOne => {
-                add_transition(EPSILON, &start, &end);
                 let (token_start, token_end) = token_to_nfa(token);
                 add_transition(EPSILON, &start, &token_start);
                 add_transition(EPSILON, &token_end, &end);
+                add_transition(EPSILON, &start, &end);
             }
             Meta::OneOrMore => {
                 let (token_start, token_end) = token_to_nfa(token);
@@ -192,11 +192,11 @@ fn token_to_nfa(token: &Token) -> (StatePtr, StatePtr) {
                 add_transition(EPSILON, &token_end, &token_start);
             }
             Meta::ZeroOrMore => {
-                add_transition(EPSILON, &start, &end);
                 let (token_start, token_end) = token_to_nfa(token);
                 add_transition(EPSILON, &start, &token_start);
                 add_transition(EPSILON, &token_end, &end);
                 add_transition(EPSILON, &token_end, &token_start);
+                add_transition(EPSILON, &start, &end);
             }
             Meta::Repeat(lo, hi) => {
                 let mut end_prev = Rc::clone(&start);
@@ -294,6 +294,9 @@ pub fn simulate_nfa(
             c if is_capture_end(c) => {
                 let capture_index = get_capture_index(c, CAPTURE_END_BASE);
                 if let Some(start_pos) = context.active_captures.get(&capture_index) {
+                    if *start_pos >= pos {
+                        return false
+                    }
                     let captured_text: String = text[*start_pos..pos].iter().collect();
                     context.captures.insert(capture_index, captured_text);
                 }

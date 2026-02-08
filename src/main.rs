@@ -2,6 +2,7 @@ mod ast;
 mod nfa;
 
 use clap::Parser;
+use std::cmp::max;
 use std::collections::HashMap;
 use std::fs;
 use std::io;
@@ -9,10 +10,11 @@ use std::io::Read;
 use std::path;
 use std::process;
 use std::rc::Rc;
+use std::vec;
 use walkdir::WalkDir;
 
 /// Checks a regular expression against a single line
-fn match_pattern(line: &str, regex: &str) -> Option<String> {
+fn match_pattern(line: &str, regex: &str) -> Option<Vec<String>> {
     let mut chars: Vec<char> = line.chars().collect();
     let ast = ast::string_to_ast(regex, &mut 1);
     let (nfa, _) = nfa::ast_to_nfa(&ast);
@@ -25,18 +27,25 @@ fn match_pattern(line: &str, regex: &str) -> Option<String> {
         chars.insert(0, nfa::START_OF_TEXT);
         // Simulate the ε-NFA only from the start of the text
         let mut context = nfa::MatchContext::new(0);
-        return nfa::simulate_nfa(nfa, &chars, 0, &mut context).then(|| context.get(&chars));
+        return nfa::simulate_nfa(nfa, &chars, 0, &mut context).then(|| vec![context.get(&chars)]);
     }
 
     // Simulate the ε-NFA for each position in the text
-    for i in 0..chars.len() {
+    let mut hits = Vec::new();
+    let mut i = 0;
+
+    while i < chars.len() {
         let mut context = nfa::MatchContext::new(i);
         if nfa::simulate_nfa(Rc::clone(&nfa), &chars, i, &mut context) {
-            return Some(context.get(&chars));
+            let hit = context.get(&chars);
+            i += max(hit.len(), 1);
+            hits.push(hit);
+        } else {
+            i += 1
         }
     }
 
-    None
+    (!hits.is_empty()).then_some(hits)
 }
 
 // Helpers
@@ -75,12 +84,14 @@ fn get_inputs(args: &Args) -> HashMap<String, String> {
     inputs
 }
 
-fn print_match(hit: &str, line: &str, fp: &str, only_matching: bool, show_prefix: bool) {
+fn print_match(hits: Vec<String>, line: &str, fp: &str, only_matching: bool, show_prefix: bool) {
     if show_prefix {
         print!("{}:", fp);
     }
     if only_matching {
-        println!("{}", hit);
+        for hit in hits {
+            println!("{}", hit);
+        }
     } else {
         println!("{}", line);
     }
@@ -90,7 +101,7 @@ fn print_match(hit: &str, line: &str, fp: &str, only_matching: bool, show_prefix
 
 #[derive(Parser, Debug)]
 struct Args {
-    #[arg(short = 'E')]
+    #[arg(short = 'E', short_alias = 'P')]
     expression: String,
 
     #[arg(short='r', default_value_t=false, action=clap::ArgAction::SetTrue)]
@@ -117,8 +128,8 @@ fn main() {
 
     for (fp, input) in inputs {
         for line in input.lines() {
-            if let Some(hit) = match_pattern(line, &args.expression) {
-                print_match(&hit, line, &fp, args.only_matching, show_prefix);
+            if let Some(hits) = match_pattern(line, &args.expression) {
+                print_match(hits, line, &fp, args.only_matching, show_prefix);
                 found = true;
             }
         }
@@ -137,6 +148,10 @@ mod tests {
 
     fn matches(text: &str, regex: &str) -> bool {
         match_pattern(text, regex).is_some()
+    }
+
+    fn get_first_match(text: &str, regex: &str) -> String {
+        match_pattern(text, regex).unwrap()[0].clone()
     }
 
     #[test]
@@ -790,12 +805,15 @@ mod tests {
     #[test]
     fn test_print_single_matching_line() {
         // From Stage #KU5 - Print a single matching line
-        assert_eq!(match_pattern("banana123", r"\d"), Some('1'.to_string()));
+        assert_eq!(get_first_match("banana123", r"\d"), '1'.to_string());
         assert_eq!(match_pattern("cherry", r"\d"), None);
-        assert_eq!(match_pattern("pineapple_suffix", "^pineapple"), Some("pineapple".to_string()));
+        assert_eq!(
+            get_first_match("pineapple_suffix", "^pineapple"),
+            "pineapple".to_string()
+        );
         assert_eq!(match_pattern("prefix_pineapple", "^pineapple"), None);
-        assert_eq!(match_pattern("cat", "ca+t"), Some("cat".to_string()));
-        assert_eq!(match_pattern("otest", "[orange]"), Some('o'.to_string()));
+        assert_eq!(get_first_match("cat", "ca+t"), "cat".to_string());
+        assert_eq!(get_first_match("otest", "[orange]"), 'o'.to_string());
     }
 
     #[test]
