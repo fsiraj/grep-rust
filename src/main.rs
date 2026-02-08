@@ -154,6 +154,10 @@ mod tests {
         match_pattern(text, regex).unwrap()[0].clone()
     }
 
+    fn get_all_matches(text: &str, regex: &str) -> Vec<String> {
+        match_pattern(text, regex).unwrap()
+    }
+
     #[test]
     fn test_literal_character() {
         assert!(matches("dog", "d"));
@@ -818,28 +822,56 @@ mod tests {
 
     #[test]
     fn test_print_multiple_matching_lines() {
-        // From Stage #PZ6 - Print multiple matching lines
-        assert!(matches("banana123", r"\d"));
-        assert!(matches("dog456", r"\d"));
-        assert!(!matches("apple", r"\d"));
-        assert!(!matches("cherry", r"\d"));
-        assert!(!matches("elephant", r"\d"));
+        // From Stage #SS2 - Print multiple matches
+        assert_eq!(get_all_matches("a1b2c3", r"\d"), vec!["1", "2", "3"]);
+        assert_eq!(match_pattern("cherry", r"\d"), None);
+        assert_eq!(
+            get_all_matches("cherry_watermelon_grape", "(grape|watermelon|cherry)"),
+            vec!["cherry", "watermelon", "grape"]
+        );
+        assert_eq!(
+            get_all_matches("xx, yy, zz", r"\w\w"),
+            vec!["xx", "yy", "zz"]
+        );
+        assert_eq!(match_pattern("##$$%", r"\w"), None);
+        assert_eq!(
+            get_all_matches(
+                "I see 3 elephants. Also, I see 4 monkeys.",
+                r"I see \d+ (elephant|monkey)s?"
+            ),
+            vec!["I see 3 elephants", "I see 4 monkeys"]
+        );
+    }
 
-        assert!(matches("banana", r"\w+"));
-        assert!(matches("blueberry", r"\w+"));
-        assert!(matches("test123", r"\w+"));
-        assert!(!matches("!@#$", r"\w+"));
-        assert!(!matches("+++", r"\w+"));
-
-        assert!(matches("panda", "(panda|elephant)"));
-        assert!(matches("elephant", "(panda|elephant)"));
-        assert!(!matches("france", "(panda|elephant)"));
-        assert!(!matches("italy", "(panda|elephant)"));
-        assert!(!matches("spain", "(panda|elephant)"));
-
-        assert!(matches("LOG 10 banana", r"^LOG \d+ (banana|cabbage)$"));
-        assert!(matches("LOG 20 cabbage", r"^LOG \d+ (banana|cabbage)$"));
-        assert!(!matches("INVALID", r"^LOG \d+ (banana|cabbage)$"));
-        assert!(!matches("LOG 30 invalid", r"^LOG \d+ (banana|cabbage)$"));
+    #[test]
+    fn test_process_multiple_input_lines() {
+        // From Stage #BO4 - Process multiple input lines
+        assert_eq!(
+            get_all_matches("a1b\nno digits here\n2c3d", r"\d"),
+            vec!["1", "2", "3"]
+        );
+        assert_eq!(
+            get_all_matches(
+                "I like lemon\nnothing here\nblueberry and lemon are tasty",
+                "(lemon|blueberry)"
+            ),
+            vec!["lemon", "blueberry", "lemon"]
+        );
+        assert_eq!(match_pattern("abc\ndef\nghi", "XYZ123"), None);
+        assert_eq!(
+            get_all_matches("dogdogdog\nelephant\ncat-cat-dog", "cat"),
+            vec!["cat", "cat"]
+        );
+        assert_eq!(
+            get_all_matches("Yesterday I saw 3 tiger and I saw 45 panda.\nNothing interesting today.\nLast week I saw 12 pandas.", r"I saw \d+ (tiger|panda)s?"),
+            vec!["I saw 3 tiger", "I saw 45 panda", "I saw 12 pandas"]
+        );
+        assert_eq!(
+            match_pattern(
+                "today is sunny\nno rains here\ntomorrow maybe rainy",
+                "cats and dogs"
+            ),
+            None
+        );
     }
 }
