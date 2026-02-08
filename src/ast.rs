@@ -42,7 +42,7 @@ pub fn parse_int(count: &str) -> usize {
     count
 }
 
-// Parses a string into an AST
+/// Parses a string into an AST
 pub fn string_to_ast(regex: &str, capture_index: &mut usize) -> Vec<Token> {
     let mut iter = regex.char_indices();
     let mut patterns = Vec::new();

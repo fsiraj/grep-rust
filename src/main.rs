@@ -2,6 +2,7 @@ mod ast;
 mod nfa;
 
 use clap::Parser;
+use std::collections::HashMap;
 use std::fs;
 use std::io;
 use std::io::Read;
@@ -10,30 +11,32 @@ use std::process;
 use std::rc::Rc;
 use walkdir::WalkDir;
 
-fn match_pattern(text: &str, regex: &str) -> bool {
-    let mut text_vec: Vec<char> = text.chars().collect();
+/// Checks a regular expression against a single line
+fn match_pattern(line: &str, regex: &str) -> Option<String> {
+    let mut chars: Vec<char> = line.chars().collect();
     let ast = ast::string_to_ast(regex, &mut 1);
     let (nfa, _) = nfa::ast_to_nfa(&ast);
 
     // Modify input text to include start and end markers
     if let Some(ast::Token::Bound(ast::Meta::End)) = ast.last() {
-        text_vec.push(nfa::END_OF_TEXT);
+        chars.push(nfa::END_OF_TEXT);
     }
     if let Some(ast::Token::Bound(ast::Meta::Start)) = ast.first() {
-        text_vec.insert(0, nfa::START_OF_TEXT);
+        chars.insert(0, nfa::START_OF_TEXT);
         // Simulate the ε-NFA only from the start of the text
-        return nfa::simulate_nfa(nfa, &text_vec, 0, &mut nfa::MatchContext::default());
+        let mut context = nfa::MatchContext::new(0);
+        return nfa::simulate_nfa(nfa, &chars, 0, &mut context).then(|| context.get(&chars));
     }
 
     // Simulate the ε-NFA for each position in the text
-    for i in 0..text_vec.len() {
-        let mut context = nfa::MatchContext::default();
-        if nfa::simulate_nfa(Rc::clone(&nfa), &text_vec, i, &mut context) {
-            return true;
+    for i in 0..chars.len() {
+        let mut context = nfa::MatchContext::new(i);
+        if nfa::simulate_nfa(Rc::clone(&nfa), &chars, i, &mut context) {
+            return Some(context.get(&chars));
         }
     }
 
-    false
+    None
 }
 
 // Helpers
@@ -47,11 +50,40 @@ fn find_files_recursive(root: &str) -> Vec<String> {
         .collect()
 }
 
-fn print_match(input: &str, fp: Option<&str>, show_prefix: bool) {
-    if show_prefix {
-        print!("{}:", fp.unwrap());
+fn get_inputs(args: &Args) -> HashMap<String, String> {
+    let mut inputs: HashMap<String, String> = HashMap::new();
+    if args.paths.is_empty() {
+        // read from stdin
+        let mut text = String::new();
+        io::stdin()
+            .read_to_string(&mut text)
+            .expect("unable to read from stdin");
+        inputs.insert(String::from("stdin"), text);
+    } else {
+        // read from files on disk
+        let filepaths = if args.recursive {
+            find_files_recursive(&args.paths[0])
+        } else {
+            args.paths.clone()
+        };
+        for fp in filepaths {
+            // eprintln!("Processing {:?}...", fp);
+            let text = fs::read_to_string(&fp).expect("unable to open file");
+            inputs.insert(fp, text);
+        }
     }
-    println!("{}", input);
+    inputs
+}
+
+fn print_match(hit: &str, line: &str, fp: &str, only_matching: bool, show_prefix: bool) {
+    if show_prefix {
+        print!("{}:", fp);
+    }
+    if only_matching {
+        println!("{}", hit);
+    } else {
+        println!("{}", line);
+    }
 }
 
 // Argument Parsing
@@ -63,6 +95,9 @@ struct Args {
 
     #[arg(short='r', default_value_t=false, action=clap::ArgAction::SetTrue)]
     recursive: bool,
+
+    #[arg(short='o', default_value_t=false, action=clap::ArgAction::SetTrue)]
+    only_matching: bool,
 
     paths: Vec<String>,
 }
@@ -77,40 +112,15 @@ fn main() {
     }
 
     let mut found = false;
-    match !args.paths.is_empty() {
-        // filepaths or recursive directory search
-        true => {
-            let filepaths = if args.recursive {
-                find_files_recursive(&args.paths[0])
-            } else {
-                args.paths
-            };
-            let show_prefix = filepaths.len() > 1 || args.recursive;
-            for fp in &filepaths {
-                // eprintln!("Processing {:?}...", fp);
-                fs::read_to_string(fp)
-                    .expect("unable to open file")
-                    .lines()
-                    .filter(|input| match_pattern(input, &args.expression))
-                    .for_each(|input| {
-                        print_match(input, Some(fp), show_prefix);
-                        found = true;
-                    });
+    let inputs = get_inputs(&args);
+    let show_prefix = inputs.len() > 1 || args.recursive;
+
+    for (fp, input) in inputs {
+        for line in input.lines() {
+            if let Some(hit) = match_pattern(line, &args.expression) {
+                print_match(&hit, line, &fp, args.only_matching, show_prefix);
+                found = true;
             }
-        }
-        // stdin
-        false => {
-            let mut input = String::new();
-            io::stdin()
-                .read_to_string(&mut input)
-                .expect("unable to read from stdin");
-            input
-                .lines()
-                .filter(|line| match_pattern(line, &args.expression))
-                .for_each(|line| {
-                    print_match(line, None, false);
-                    found = true;
-                });
         }
     }
 
@@ -126,7 +136,7 @@ mod tests {
     use super::*;
 
     fn matches(text: &str, regex: &str) -> bool {
-        match_pattern(text, regex)
+        match_pattern(text, regex).is_some()
     }
 
     #[test]
@@ -775,5 +785,43 @@ mod tests {
             "bat and fish, bat with fish, bat and fish",
             "((c.t|d.g) and (f..h|b..d)), \\2 with \\3, \\1"
         ));
+    }
+
+    #[test]
+    fn test_print_single_matching_line() {
+        // From Stage #KU5 - Print a single matching line
+        assert_eq!(match_pattern("banana123", r"\d"), Some('1'.to_string()));
+        assert_eq!(match_pattern("cherry", r"\d"), None);
+        assert_eq!(match_pattern("pineapple_suffix", "^pineapple"), Some("pineapple".to_string()));
+        assert_eq!(match_pattern("prefix_pineapple", "^pineapple"), None);
+        assert_eq!(match_pattern("cat", "ca+t"), Some("cat".to_string()));
+        assert_eq!(match_pattern("otest", "[orange]"), Some('o'.to_string()));
+    }
+
+    #[test]
+    fn test_print_multiple_matching_lines() {
+        // From Stage #PZ6 - Print multiple matching lines
+        assert!(matches("banana123", r"\d"));
+        assert!(matches("dog456", r"\d"));
+        assert!(!matches("apple", r"\d"));
+        assert!(!matches("cherry", r"\d"));
+        assert!(!matches("elephant", r"\d"));
+
+        assert!(matches("banana", r"\w+"));
+        assert!(matches("blueberry", r"\w+"));
+        assert!(matches("test123", r"\w+"));
+        assert!(!matches("!@#$", r"\w+"));
+        assert!(!matches("+++", r"\w+"));
+
+        assert!(matches("panda", "(panda|elephant)"));
+        assert!(matches("elephant", "(panda|elephant)"));
+        assert!(!matches("france", "(panda|elephant)"));
+        assert!(!matches("italy", "(panda|elephant)"));
+        assert!(!matches("spain", "(panda|elephant)"));
+
+        assert!(matches("LOG 10 banana", r"^LOG \d+ (banana|cabbage)$"));
+        assert!(matches("LOG 20 cabbage", r"^LOG \d+ (banana|cabbage)$"));
+        assert!(!matches("INVALID", r"^LOG \d+ (banana|cabbage)$"));
+        assert!(!matches("LOG 30 invalid", r"^LOG \d+ (banana|cabbage)$"));
     }
 }

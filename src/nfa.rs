@@ -14,7 +14,7 @@ const CAPTURE_START_BASE: char = '\u{E000}';
 const CAPTURE_END_BASE: char = '\u{E100}';
 const BACKREF_BASE: char = '\u{F000}';
 
-// States in the ε-Non-deterministic Finite Automata
+/// States in the ε-Non-deterministic Finite Automata
 #[derive(Debug, Default)]
 pub struct State {
     initial: bool,
@@ -22,16 +22,44 @@ pub struct State {
     transitions: HashMap<char, Vec<StatePtr>>, // edge_char -> [next_states]
 }
 
-// Capture tracking for backreferences
+/// Capture tracking for backreferences
 #[derive(Debug, Default, Clone)]
 pub struct MatchContext {
+    match_start: usize,
+    match_end: Option<usize>,
     captures: HashMap<usize, String>, // capture_index -> capture_string
     active_captures: HashMap<usize, usize>, // capture_index -> start_pos
 }
 
+impl MatchContext {
+    pub fn new(start: usize) -> Self {
+        MatchContext {
+            match_start: start,
+            ..Default::default()
+        }
+    }
+
+    /// Gets the match bases on match start and end,
+    /// adjusts for boundary characters inserted before simulation
+    pub fn get(&self, text: &[char]) -> String {
+        let start = self.match_start;
+        let end = self.match_end.unwrap();
+        let mut slice = &text[start..end];
+
+        if slice.first() == Some(&START_OF_TEXT) {
+            slice = &slice[1..];
+        }
+        if slice.last() == Some(&END_OF_TEXT) {
+            slice = &slice[..slice.len() - 1];
+        }
+
+        slice.iter().collect()
+    }
+}
+
 type StatePtr = Rc<RefCell<State>>;
 
-// Parses an AST into an ε-NFA
+/// Parses an AST into an ε-NFA
 pub fn ast_to_nfa(ast: &[Token]) -> (StatePtr, StatePtr) {
     // Convert all tokens to ε-NFA fragments and joins theme with ε-transitions
     let (start_state, mut end_state) = token_to_nfa(&ast[0]);
@@ -85,8 +113,8 @@ fn token_to_nfa(token: &Token) -> (StatePtr, StatePtr) {
             }
             _ => unreachable!(),
         },
-        // Adds one transition for each character in the character group, and an ANY transition
-        // if negate is true
+        // Adds one transition for each character in the character group,
+        // and an ANY transition if negated group
         Token::CharGroup { chars, negate } => {
             // The characters in the group lead to a deadend state, and there is an ANY transition
             // to the end state. This complexity is handled in the simulation.
@@ -179,7 +207,7 @@ fn token_to_nfa(token: &Token) -> (StatePtr, StatePtr) {
                     end_prev = end_next;
                 }
                 // optional repetitions
-                for _ in 0..(hi-lo) {
+                for _ in 0..(hi - lo) {
                     add_transition(EPSILON, &end_prev, &end);
                     let (start_next, end_next) = token_to_nfa(token);
                     add_transition(EPSILON, &end_prev, &start_next);
@@ -208,6 +236,7 @@ pub fn simulate_nfa(
     let state_ref = state.borrow();
 
     if state_ref.terminal {
+        context.match_end = Some(pos);
         return true;
     }
 
@@ -221,7 +250,36 @@ pub fn simulate_nfa(
 
     for (transition_char, next_states) in &state_ref.transitions {
         match *transition_char {
-            // Handle capture group start
+            // Regular character transitions (includes ^ and $)
+            c if c == ch => {
+                for next_state in next_states {
+                    if simulate_nfa(Rc::clone(next_state), text, pos + 1, context) {
+                        return true;
+                    }
+                }
+            }
+
+            // Epsilon transitions (consumes no chars)
+            c if c == EPSILON => {
+                for next_state in next_states {
+                    if simulate_nfa(Rc::clone(next_state), text, pos, context) {
+                        return true;
+                    }
+                }
+            }
+
+            // Any character transitions (excludes ^ and $, and handles negative character groups)
+            c if c == ANY && ch != START_OF_TEXT && ch != END_OF_TEXT => {
+                if !has_deadend_transition(&state_ref, ch) {
+                    for next_state in next_states {
+                        if simulate_nfa(Rc::clone(next_state), text, pos + 1, context) {
+                            return true;
+                        }
+                    }
+                }
+            }
+
+            // Start a capture group
             c if is_capture_start(c) => {
                 let capture_index = get_capture_index(c, CAPTURE_START_BASE);
                 context.active_captures.insert(capture_index, pos);
@@ -232,7 +290,7 @@ pub fn simulate_nfa(
                 }
             }
 
-            // Handle capture group end
+            // End a capture group,
             c if is_capture_end(c) => {
                 let capture_index = get_capture_index(c, CAPTURE_END_BASE);
                 if let Some(start_pos) = context.active_captures.get(&capture_index) {
@@ -264,35 +322,6 @@ pub fn simulate_nfa(
                                 return true;
                             }
                         }
-                    }
-                }
-            }
-
-            // Regular character transitions (includes ^ and $)
-            c if c == ch => {
-                for next_state in next_states {
-                    if simulate_nfa(Rc::clone(next_state), text, pos + 1, context) {
-                        return true;
-                    }
-                }
-            }
-
-            // Any character transitions (excludes ^ and $)
-            c if c == ANY && ch != START_OF_TEXT && ch != END_OF_TEXT => {
-                if !has_deadend_transition(&state_ref, ch) {
-                    for next_state in next_states {
-                        if simulate_nfa(Rc::clone(next_state), text, pos + 1, context) {
-                            return true;
-                        }
-                    }
-                }
-            }
-
-            // Epsilon transitions (consumes no chars)
-            c if c == EPSILON => {
-                for next_state in next_states {
-                    if simulate_nfa(Rc::clone(next_state), text, pos, context) {
-                        return true;
                     }
                 }
             }
@@ -339,8 +368,7 @@ fn has_deadend_transition(state_ref: &std::cell::Ref<State>, ch: char) -> bool {
     state_ref.transitions.get(&ch).is_some_and(|states| {
         states.iter().any(|s| {
             let s_ref = s.borrow();
-            !s_ref.initial && !s_ref.terminal && s_ref.transitions.is_empty()
+            s_ref.transitions.is_empty() && !s_ref.initial && !s_ref.terminal
         })
     })
 }
-
