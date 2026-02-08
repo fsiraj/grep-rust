@@ -6,6 +6,7 @@ use std::cmp::max;
 use std::collections::HashMap;
 use std::fs;
 use std::io;
+use std::io::IsTerminal;
 use std::io::Read;
 use std::path;
 use std::process;
@@ -151,7 +152,7 @@ fn main() {
     let use_color: bool = match args.color {
         ColorMode::Always => true,
         ColorMode::Never => false,
-        ColorMode::Auto => false,
+        ColorMode::Auto => io::stdout().is_terminal(),
     };
 
     let mut found = false;
