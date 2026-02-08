@@ -22,7 +22,7 @@ pub struct State {
     transitions: HashMap<char, Vec<StatePtr>>, // edge_char -> [next_states]
 }
 
-/// Capture tracking for backreferences
+/// Capture tracking for match indices and backreferences
 #[derive(Debug, Default, Clone)]
 pub struct MatchContext {
     match_start: usize,
@@ -39,22 +39,35 @@ impl MatchContext {
         }
     }
 
-    /// Gets the match bases on match start and end,
+    /// Gets the match based on match start and end,
     /// adjusts for boundary characters inserted before simulation
-    pub fn get(&self, text: &[char]) -> String {
+    pub fn get(&self, text: &[char]) -> Match {
         let start = self.match_start;
-        let end = self.match_end.unwrap();
+        let mut end = self.match_end.unwrap();
         let mut slice = &text[start..end];
 
         if slice.first() == Some(&START_OF_TEXT) {
             slice = &slice[1..];
+            end -= 1;
         }
         if slice.last() == Some(&END_OF_TEXT) {
             slice = &slice[..slice.len() - 1];
+            end -= 1;
         }
 
-        slice.iter().collect()
+        Match {
+            start,
+            end,
+            text: slice.iter().collect(),
+        }
     }
+}
+
+#[derive(Debug)]
+pub struct Match {
+    pub start: usize,
+    pub end: usize,
+    pub text: String,
 }
 
 type StatePtr = Rc<RefCell<State>>;
@@ -295,7 +308,7 @@ pub fn simulate_nfa(
                 let capture_index = get_capture_index(c, CAPTURE_END_BASE);
                 if let Some(start_pos) = context.active_captures.get(&capture_index) {
                     if *start_pos >= pos {
-                        return false
+                        return false;
                     }
                     let captured_text: String = text[*start_pos..pos].iter().collect();
                     context.captures.insert(capture_index, captured_text);

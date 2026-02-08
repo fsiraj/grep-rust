@@ -1,7 +1,7 @@
 mod ast;
 mod nfa;
 
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use std::cmp::max;
 use std::collections::HashMap;
 use std::fs;
@@ -14,7 +14,7 @@ use std::vec;
 use walkdir::WalkDir;
 
 /// Checks a regular expression against a single line
-fn match_pattern(line: &str, regex: &str) -> Option<Vec<String>> {
+fn match_pattern(line: &str, regex: &str) -> Option<Vec<nfa::Match>> {
     let mut chars: Vec<char> = line.chars().collect();
     let ast = ast::string_to_ast(regex, &mut 1);
     let (nfa, _) = nfa::ast_to_nfa(&ast);
@@ -37,9 +37,9 @@ fn match_pattern(line: &str, regex: &str) -> Option<Vec<String>> {
     while i < chars.len() {
         let mut context = nfa::MatchContext::new(i);
         if nfa::simulate_nfa(Rc::clone(&nfa), &chars, i, &mut context) {
-            let hit = context.get(&chars);
-            i += max(hit.len(), 1);
-            hits.push(hit);
+            let rmatch = context.get(&chars);
+            i += max(rmatch.text.len(), 1);
+            hits.push(rmatch);
         } else {
             i += 1
         }
@@ -84,14 +84,31 @@ fn get_inputs(args: &Args) -> HashMap<String, String> {
     inputs
 }
 
-fn print_match(hits: Vec<String>, line: &str, fp: &str, only_matching: bool, show_prefix: bool) {
+fn print_match(
+    rmatches: Vec<nfa::Match>,
+    line: &str,
+    fp: &str,
+    only_matching: bool,
+    show_prefix: bool,
+    use_color: bool,
+) {
     if show_prefix {
         print!("{}:", fp);
     }
     if only_matching {
-        for hit in hits {
-            println!("{}", hit);
+        for rmatch in rmatches {
+            println!("{}", rmatch.text);
         }
+    } else if use_color {
+        let mut result = String::new();
+        let mut last_pos = 0;
+        for rmatch in rmatches {
+            result.push_str(&line[last_pos..rmatch.start]);
+            result.push_str(&format!("\x1b[01;31m{}\x1b[m", rmatch.text));
+            last_pos = rmatch.end;
+        }
+        result.push_str(&line[last_pos..]);
+        println!("{}", result);
     } else {
         println!("{}", line);
     }
@@ -104,13 +121,23 @@ struct Args {
     #[arg(short = 'E', short_alias = 'P')]
     expression: String,
 
-    #[arg(short='r', default_value_t=false, action=clap::ArgAction::SetTrue)]
+    #[arg(short = 'r')]
     recursive: bool,
 
-    #[arg(short='o', default_value_t=false, action=clap::ArgAction::SetTrue)]
+    #[arg(short = 'o')]
     only_matching: bool,
 
+    #[arg(long, value_enum, default_value = "auto")]
+    color: ColorMode,
+
     paths: Vec<String>,
+}
+
+#[derive(ValueEnum, Clone, Debug)]
+enum ColorMode {
+    Always,
+    Never,
+    Auto,
 }
 
 // Main
@@ -121,6 +148,11 @@ fn main() {
         eprintln!("Error: -r requires exactyly one path to a directory.");
         process::exit(1);
     }
+    let use_color: bool = match args.color {
+        ColorMode::Always => true,
+        ColorMode::Never => false,
+        ColorMode::Auto => false,
+    };
 
     let mut found = false;
     let inputs = get_inputs(&args);
@@ -129,7 +161,7 @@ fn main() {
     for (fp, input) in inputs {
         for line in input.lines() {
             if let Some(hits) = match_pattern(line, &args.expression) {
-                print_match(hits, line, &fp, args.only_matching, show_prefix);
+                print_match(hits, line, &fp, args.only_matching, show_prefix, use_color);
                 found = true;
             }
         }
@@ -151,11 +183,15 @@ mod tests {
     }
 
     fn get_first_match(text: &str, regex: &str) -> String {
-        match_pattern(text, regex).unwrap()[0].clone()
+        match_pattern(text, regex).unwrap()[0].text.clone()
     }
 
     fn get_all_matches(text: &str, regex: &str) -> Vec<String> {
-        match_pattern(text, regex).unwrap()
+        match_pattern(text, regex)
+            .unwrap()
+            .iter()
+            .map(|m| m.text.clone())
+            .collect()
     }
 
     #[test]
@@ -810,12 +846,12 @@ mod tests {
     fn test_print_single_matching_line() {
         // From Stage #KU5 - Print a single matching line
         assert_eq!(get_first_match("banana123", r"\d"), '1'.to_string());
-        assert_eq!(match_pattern("cherry", r"\d"), None);
+        assert!(match_pattern("cherry", r"\d").is_none());
         assert_eq!(
             get_first_match("pineapple_suffix", "^pineapple"),
             "pineapple".to_string()
         );
-        assert_eq!(match_pattern("prefix_pineapple", "^pineapple"), None);
+        assert!(match_pattern("prefix_pineapple", "^pineapple").is_none());
         assert_eq!(get_first_match("cat", "ca+t"), "cat".to_string());
         assert_eq!(get_first_match("otest", "[orange]"), 'o'.to_string());
     }
@@ -824,7 +860,7 @@ mod tests {
     fn test_print_multiple_matching_lines() {
         // From Stage #SS2 - Print multiple matches
         assert_eq!(get_all_matches("a1b2c3", r"\d"), vec!["1", "2", "3"]);
-        assert_eq!(match_pattern("cherry", r"\d"), None);
+        assert!(match_pattern("cherry", r"\d").is_none());
         assert_eq!(
             get_all_matches("cherry_watermelon_grape", "(grape|watermelon|cherry)"),
             vec!["cherry", "watermelon", "grape"]
@@ -833,7 +869,7 @@ mod tests {
             get_all_matches("xx, yy, zz", r"\w\w"),
             vec!["xx", "yy", "zz"]
         );
-        assert_eq!(match_pattern("##$$%", r"\w"), None);
+        assert!(match_pattern("##$$%", r"\w").is_none());
         assert_eq!(
             get_all_matches(
                 "I see 3 elephants. Also, I see 4 monkeys.",
@@ -857,7 +893,7 @@ mod tests {
             ),
             vec!["lemon", "blueberry", "lemon"]
         );
-        assert_eq!(match_pattern("abc\ndef\nghi", "XYZ123"), None);
+        assert!(match_pattern("abc\ndef\nghi", "XYZ123").is_none());
         assert_eq!(
             get_all_matches("dogdogdog\nelephant\ncat-cat-dog", "cat"),
             vec!["cat", "cat"]
@@ -866,12 +902,10 @@ mod tests {
             get_all_matches("Yesterday I saw 3 tiger and I saw 45 panda.\nNothing interesting today.\nLast week I saw 12 pandas.", r"I saw \d+ (tiger|panda)s?"),
             vec!["I saw 3 tiger", "I saw 45 panda", "I saw 12 pandas"]
         );
-        assert_eq!(
-            match_pattern(
-                "today is sunny\nno rains here\ntomorrow maybe rainy",
-                "cats and dogs"
-            ),
-            None
-        );
+        assert!(match_pattern(
+            "today is sunny\nno rains here\ntomorrow maybe rainy",
+            "cats and dogs"
+        )
+        .is_none());
     }
 }
