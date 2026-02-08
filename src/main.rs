@@ -14,41 +14,6 @@ use std::rc::Rc;
 use std::vec;
 use walkdir::WalkDir;
 
-/// Checks a regular expression against a single line
-fn match_pattern(line: &str, regex: &str) -> Option<Vec<nfa::Match>> {
-    let mut chars: Vec<char> = line.chars().collect();
-    let ast = ast::string_to_ast(regex, &mut 1);
-    let (nfa, _) = nfa::ast_to_nfa(&ast);
-
-    // Modify input text to include start and end markers
-    if let Some(ast::Token::Bound(ast::Meta::End)) = ast.last() {
-        chars.push(nfa::END_OF_TEXT);
-    }
-    if let Some(ast::Token::Bound(ast::Meta::Start)) = ast.first() {
-        chars.insert(0, nfa::START_OF_TEXT);
-        // Simulate the ε-NFA only from the start of the text
-        let mut context = nfa::MatchContext::new(0);
-        return nfa::simulate_nfa(nfa, &chars, 0, &mut context).then(|| vec![context.get(&chars)]);
-    }
-
-    // Simulate the ε-NFA for each position in the text
-    let mut hits = Vec::new();
-    let mut i = 0;
-
-    while i < chars.len() {
-        let mut context = nfa::MatchContext::new(i);
-        if nfa::simulate_nfa(Rc::clone(&nfa), &chars, i, &mut context) {
-            let rmatch = context.get(&chars);
-            i += max(rmatch.text.len(), 1);
-            hits.push(rmatch);
-        } else {
-            i += 1
-        }
-    }
-
-    (!hits.is_empty()).then_some(hits)
-}
-
 // Helpers
 
 fn find_files_recursive(root: &str) -> Vec<String> {
@@ -86,7 +51,7 @@ fn get_inputs(args: &Args) -> HashMap<String, String> {
 }
 
 fn print_match(
-    rmatches: Vec<nfa::Match>,
+    pmatches: Vec<nfa::Match>,
     line: &str,
     fp: &str,
     only_matching: bool,
@@ -97,22 +62,57 @@ fn print_match(
         print!("{}:", fp);
     }
     if only_matching {
-        for rmatch in rmatches {
-            println!("{}", rmatch.text);
+        for pmatch in pmatches {
+            println!("{}", pmatch.text);
         }
     } else if use_color {
         let mut result = String::new();
         let mut last_pos = 0;
-        for rmatch in rmatches {
-            result.push_str(&line[last_pos..rmatch.start]);
-            result.push_str(&format!("\x1b[01;31m{}\x1b[m", rmatch.text));
-            last_pos = rmatch.end;
+        for pmatch in pmatches {
+            result.push_str(&line[last_pos..pmatch.start]);
+            result.push_str(&format!("\x1b[01;31m{}\x1b[m", pmatch.text));
+            last_pos = pmatch.end;
         }
         result.push_str(&line[last_pos..]);
         println!("{}", result);
     } else {
         println!("{}", line);
     }
+}
+
+/// Checks a regular expression against a single line
+fn match_pattern(line: &str, regex: &str) -> Option<Vec<nfa::Match>> {
+    let mut chars: Vec<char> = line.chars().collect();
+    let ast = ast::string_to_ast(regex, &mut 1);
+    let (nfa, _) = nfa::ast_to_nfa(&ast);
+
+    // Modify input text to include start and end markers
+    if let Some(ast::Token::Bound(ast::Meta::End)) = ast.last() {
+        chars.push(nfa::END_OF_TEXT);
+    }
+    if let Some(ast::Token::Bound(ast::Meta::Start)) = ast.first() {
+        chars.insert(0, nfa::START_OF_TEXT);
+        // Simulate the ε-NFA only from the start of the text
+        let mut context = nfa::MatchContext::new(0);
+        return nfa::simulate_nfa(nfa, &chars, 0, &mut context).then(|| vec![context.get(&chars)]);
+    }
+
+    // Simulate the ε-NFA for each position in the text
+    let mut hits = Vec::new();
+    let mut i = 0;
+
+    while i < chars.len() {
+        let mut context = nfa::MatchContext::new(i);
+        if nfa::simulate_nfa(Rc::clone(&nfa), &chars, i, &mut context) {
+            let pmatch = context.get(&chars);
+            i += max(pmatch.text.len(), 1);
+            hits.push(pmatch);
+        } else {
+            i += 1
+        }
+    }
+
+    (!hits.is_empty()).then_some(hits)
 }
 
 // Argument Parsing
@@ -149,30 +149,26 @@ fn main() {
         eprintln!("Error: -r requires exactyly one path to a directory.");
         process::exit(1);
     }
+    let inputs = get_inputs(&args);
+    let show_prefix = inputs.len() > 1 || args.recursive;
     let use_color: bool = match args.color {
         ColorMode::Always => true,
         ColorMode::Never => false,
         ColorMode::Auto => io::stdout().is_terminal(),
     };
-
-    let mut found = false;
-    let inputs = get_inputs(&args);
-    let show_prefix = inputs.len() > 1 || args.recursive;
+    let only_matching = args.only_matching;
+    let mut success = false;
 
     for (fp, input) in inputs {
         for line in input.lines() {
-            if let Some(hits) = match_pattern(line, &args.expression) {
-                print_match(hits, line, &fp, args.only_matching, show_prefix, use_color);
-                found = true;
+            if let Some(pmatches) = match_pattern(line, &args.expression) {
+                print_match(pmatches, line, &fp, only_matching, show_prefix, use_color);
+                success = true;
             }
         }
     }
 
-    if found {
-        process::exit(0)
-    } else {
-        process::exit(1)
-    }
+    process::exit((!success) as i32)
 }
 
 #[cfg(test)]
