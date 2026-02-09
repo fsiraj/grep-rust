@@ -25,6 +25,7 @@ pub struct State {
 /// Capture tracking for match indices and backreferences
 #[derive(Debug, Default, Clone)]
 pub struct MatchContext {
+    line: Vec<char>,
     match_start: usize,
     match_end: Option<usize>,
     captures: HashMap<usize, String>, // capture_index -> capture_string
@@ -32,19 +33,27 @@ pub struct MatchContext {
 }
 
 impl MatchContext {
-    pub fn new(start: usize) -> Self {
+    pub fn new(start: usize, line: &[char]) -> Self {
         MatchContext {
+            line: line.to_owned(),
             match_start: start,
             ..Default::default()
         }
     }
+}
 
-    /// Gets the match based on match start and end,
-    /// adjusts for boundary characters inserted before simulation
-    pub fn get(&self, text: &[char]) -> Match {
-        let start = self.match_start;
-        let mut end = self.match_end.unwrap();
-        let mut slice = &text[start..end];
+#[derive(Debug)]
+pub struct Match {
+    pub start: usize,
+    pub end: usize,
+    pub text: String,
+}
+
+impl From<MatchContext> for Match {
+    fn from(context: MatchContext) -> Self {
+        let start = context.match_start;
+        let mut end = context.match_end.unwrap();
+        let mut slice = &context.line[start..end];
 
         if slice.first() == Some(&START_OF_TEXT) {
             slice = &slice[1..];
@@ -61,14 +70,9 @@ impl MatchContext {
             text: slice.iter().collect(),
         }
     }
+
 }
 
-#[derive(Debug)]
-pub struct Match {
-    pub start: usize,
-    pub end: usize,
-    pub text: String,
-}
 
 type StatePtr = Rc<RefCell<State>>;
 

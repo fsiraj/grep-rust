@@ -93,8 +93,9 @@ fn match_pattern(line: &str, regex: &str) -> Option<Vec<nfa::Match>> {
     if let Some(ast::Token::Bound(ast::Meta::Start)) = ast.first() {
         chars.insert(0, nfa::START_OF_TEXT);
         // Simulate the ε-NFA only from the start of the text
-        let mut context = nfa::MatchContext::new(0);
-        return nfa::simulate_nfa(nfa, &chars, 0, &mut context).then(|| vec![context.get(&chars)]);
+        let mut context = nfa::MatchContext::new(0, &chars);
+        return nfa::simulate_nfa(nfa, &chars, 0, &mut context)
+            .then(|| vec![nfa::Match::from(context)]);
     }
 
     // Simulate the ε-NFA for each position in the text
@@ -102,9 +103,9 @@ fn match_pattern(line: &str, regex: &str) -> Option<Vec<nfa::Match>> {
     let mut i = 0;
 
     while i < chars.len() {
-        let mut context = nfa::MatchContext::new(i);
+        let mut context = nfa::MatchContext::new(i, &chars);
         if nfa::simulate_nfa(Rc::clone(&nfa), &chars, i, &mut context) {
-            let pmatch = context.get(&chars);
+            let pmatch = nfa::Match::from(context);
             i += max(pmatch.text.len(), 1);
             hits.push(pmatch);
         } else {
